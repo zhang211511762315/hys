@@ -1,0 +1,29 @@
+{% extends "aggregator/base.html" %}
+{% block title %}{{ item.title }} · 中北信息聚合{% endblock %}
+{% block content %}
+<article class="item">
+  <h1>{{ item.title }}</h1>
+  <div class="meta">
+    <a href="{% url 'aggregator:source_detail' item.source.id %}">{{ item.source.name }}</a>
+    {% if item.category %} · <a href="{% url 'aggregator:category_detail' item.category.slug %}">{{ item.category.name }}</a>{% endif %}
+    {% if item.published_at %} · {{ item.published_at|date:"Y-m-d H:i" }}{% endif %}
+  </div>
+  <p class="summary">{{ item.summary }}</p>
+  <div class="tags">
+    {% for tag in item.tags.all %}<span class="tag">{{ tag.name }}</span>{% endfor %}
+  </div>
+  <section>
+    <h2>来源</h2>
+    <ul>
+      {% for content_source in item.content_sources.all %}
+        <li>
+          {{ content_source.source.name }}:
+          <a href="{{ content_source.url }}" target="_blank" rel="noopener noreferrer">{{ content_source.url }}</a>
+        </li>
+      {% empty %}
+        <li><a href="{{ item.canonical_url }}" target="_blank" rel="noopener noreferrer">查看原文</a></li>
+      {% endfor %}
+    </ul>
+  </section>
+</article>
+{% endblock %}

@@ -1,0 +1,6 @@
+{% extends "aggregator/base.html" %}
+{% block title %}{{ category.name }} · 中北信息聚合{% endblock %}
+{% block content %}
+<h1>{{ category.name }}</h1>
+{% include "aggregator/_item_list.html" %}
+{% endblock %}

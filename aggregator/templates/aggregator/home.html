@@ -1,0 +1,21 @@
+{% extends "aggregator/base.html" %}
+{% block title %}中北信息聚合{% endblock %}
+{% block content %}
+<form class="searchbar" action="{% url 'aggregator:search' %}" method="get">
+  <input type="search" name="q" placeholder="搜索通知、学院、实验室、社团" aria-label="搜索">
+  <button type="submit">搜索</button>
+</form>
+<div class="grid">
+  <section>
+    {% include "aggregator/_item_list.html" %}
+  </section>
+  <aside class="panel">
+    <h2>分类</h2>
+    {% for category in categories %}
+      <p><a href="{% url 'aggregator:category_detail' category.slug %}">{{ category.name }}</a></p>
+    {% empty %}
+      <p>暂无分类</p>
+    {% endfor %}
+  </aside>
+</div>
+{% endblock %}

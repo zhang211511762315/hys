@@ -1,0 +1,15 @@
+{% extends "aggregator/base.html" %}
+{% block title %}搜索 · 中北信息聚合{% endblock %}
+{% block content %}
+<form class="searchbar" action="{% url 'aggregator:search' %}" method="get">
+  <input type="search" name="q" value="{{ query }}" placeholder="关键词" aria-label="关键词">
+  <select name="category" aria-label="分类">
+    <option value="">全部分类</option>
+    {% for category in categories %}
+      <option value="{{ category.slug }}" {% if category.slug == category_slug %}selected{% endif %}>{{ category.name }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">搜索</button>
+</form>
+{% include "aggregator/_item_list.html" %}
+{% endblock %}

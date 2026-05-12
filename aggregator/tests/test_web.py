@@ -1,0 +1,176 @@
+import pytest
+from django.urls import reverse
+
+from django.utils import timezone
+
+from aggregator.models import Category, ContentItem, ContentSource, Source
+
+
+@pytest.mark.django_db
+def test_homepage_lists_published_items(client):
+    source = Source.objects.create(
+        name="中北大学官网",
+        url="https://www.nuc.edu.cn/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    category = Category.objects.create(name="通知", slug="notice")
+    ContentItem.objects.create(
+        source=source,
+        category=category,
+        title="中北大学发布重要通知",
+        canonical_url="https://www.nuc.edu.cn/info/1001/1234.htm",
+        summary="这是一条来自中北大学官网的摘要。",
+        content_text="全文仅用于检索和去重。",
+        status=ContentItem.Status.PUBLISHED,
+        source_published_at=timezone.datetime(2026, 1, 2, tzinfo=timezone.get_current_timezone()),
+    )
+
+    response = client.get(reverse("aggregator:home"))
+
+    assert response.status_code == 200
+    assert "中北大学发布重要通知" in response.content.decode()
+    assert "原文" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_unpublished_items_are_hidden(client):
+    source = Source.objects.create(
+        name="中北大学官网",
+        url="https://www.nuc.edu.cn/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    ContentItem.objects.create(
+        source=source,
+        title="内部待处理内容",
+        canonical_url="https://www.nuc.edu.cn/info/1001/9999.htm",
+        summary="不应公开",
+        content_text="不应公开",
+        status=ContentItem.Status.CLEANED,
+    )
+
+    response = client.get(reverse("aggregator:home"))
+
+    assert response.status_code == 200
+    assert "内部待处理内容" not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_items_that_are_not_public_are_hidden(client):
+    source = Source.objects.create(
+        name="NUC",
+        url="https://www.nuc.edu.cn/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    ContentItem.objects.create(
+        source=source,
+        title="Hidden candidate",
+        canonical_url="https://www.nuc.edu.cn/info/1001/hidden.htm",
+        summary="Hidden",
+        content_text="Hidden",
+        status=ContentItem.Status.PUBLISHED,
+        is_public=False,
+        source_published_at=timezone.datetime(2026, 1, 2, tzinfo=timezone.get_current_timezone()),
+    )
+
+    response = client.get(reverse("aggregator:home"))
+
+    assert response.status_code == 200
+    assert "Hidden candidate" not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_items_before_public_since_date_are_hidden(client):
+    source = Source.objects.create(
+        name="NUC",
+        url="https://www.nuc.edu.cn/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    ContentItem.objects.create(
+        source=source,
+        title="Old public item",
+        canonical_url="https://www.nuc.edu.cn/info/1001/old.htm",
+        summary="Old",
+        content_text="Old",
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+        source_published_at=timezone.datetime(2025, 12, 31, tzinfo=timezone.get_current_timezone()),
+    )
+
+    response = client.get(reverse("aggregator:home"))
+
+    assert response.status_code == 200
+    assert "Old public item" not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_detail_page_lists_all_content_sources(client):
+    first = Source.objects.create(name="Official", url="https://www.nuc.edu.cn/", source_type=Source.SourceType.OFFICIAL_SITE)
+    second = Source.objects.create(name="College", url="https://cst.nuc.edu.cn/", source_type=Source.SourceType.COLLEGE_SITE)
+    item = ContentItem.objects.create(
+        source=first,
+        title="Shared notice",
+        canonical_url="https://www.nuc.edu.cn/info/1001/shared.htm",
+        summary="Shared",
+        content_text="Shared body",
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+        source_published_at=timezone.datetime(2026, 1, 2, tzinfo=timezone.get_current_timezone()),
+    )
+    ContentSource.objects.create(content_item=item, source=first, url="https://www.nuc.edu.cn/info/1001/shared.htm")
+    ContentSource.objects.create(content_item=item, source=second, url="https://cst.nuc.edu.cn/info/2001/shared.htm")
+
+    response = client.get(reverse("aggregator:item_detail", args=[item.id]))
+    html = response.content.decode()
+
+    assert response.status_code == 200
+    assert "Official" in html
+    assert "College" in html
+    assert "https://cst.nuc.edu.cn/info/2001/shared.htm" in html
+
+
+@pytest.mark.django_db
+def test_homepage_orders_by_importance_before_recency(client):
+    source = Source.objects.create(
+        name="中北大学官网",
+        url="https://www.nuc.edu.cn/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    category = Category.objects.create(name="通知", slug="notice")
+    ContentItem.objects.create(
+        source=source,
+        category=category,
+        title="普通新闻",
+        canonical_url="https://www.nuc.edu.cn/info/1001/1.htm",
+        summary="普通新闻",
+        content_text="普通新闻",
+        status=ContentItem.Status.PUBLISHED,
+        importance_score=10,
+        source_published_at=timezone.datetime(2026, 1, 2, tzinfo=timezone.get_current_timezone()),
+    )
+    ContentItem.objects.create(
+        source=source,
+        category=category,
+        title="重要通知",
+        canonical_url="https://www.nuc.edu.cn/info/1001/2.htm",
+        summary="重要通知",
+        content_text="重要通知",
+        status=ContentItem.Status.PUBLISHED,
+        importance_score=90,
+        source_published_at=timezone.datetime(2026, 1, 2, tzinfo=timezone.get_current_timezone()),
+    )
+
+    response = client.get(reverse("aggregator:home"))
+    html = response.content.decode()
+
+    assert html.index("重要通知") < html.index("普通新闻")
+
+
+@pytest.mark.django_db
+def test_new_social_source_defaults_to_daily_crawl():
+    source = Source.objects.create(
+        name="抖音中北账号",
+        url="https://www.douyin.com/user/example",
+        source_type=Source.SourceType.SOCIAL_LINK,
+    )
+
+    assert source.crawl_interval_minutes == 1440

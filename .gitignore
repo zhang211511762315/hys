@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+db.sqlite3
+.env
+staticfiles/
+media/
+*.log
+.playwright-mcp/
+docs/deploy-caddy-gunicorn-systemd-prompt.md

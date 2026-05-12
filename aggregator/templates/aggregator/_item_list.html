@@ -1,0 +1,17 @@
+{% for item in items %}
+  <article class="item">
+    <h2><a href="{{ item.get_absolute_url }}">{{ item.title }}</a></h2>
+    <div class="meta">
+      {{ item.source.name }}
+      {% if item.category %} · <a href="{% url 'aggregator:category_detail' item.category.slug %}">{{ item.category.name }}</a>{% endif %}
+      {% if item.published_at %} · {{ item.published_at|date:"Y-m-d H:i" }}{% endif %}
+    </div>
+    <p class="summary">{{ item.summary|default:item.content_text|truncatechars:180 }}</p>
+    <div class="tags">
+      {% for tag in item.tags.all %}<span class="tag">{{ tag.name }}</span>{% endfor %}
+    </div>
+    <p><a href="{{ item.canonical_url }}" target="_blank" rel="noopener noreferrer">原文</a></p>
+  </article>
+{% empty %}
+  <article class="item">暂无已发布内容。</article>
+{% endfor %}

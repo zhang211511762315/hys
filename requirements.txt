@@ -1,0 +1,17 @@
+Django==5.2.1
+pytest==8.3.5
+pytest-django==4.11.1
+celery==5.5.2
+redis==5.2.1
+PyMySQL==1.1.1
+httpx==0.28.1
+beautifulsoup4==4.13.4
+trafilatura==2.0.0
+meilisearch==0.34.1
+python-dotenv==1.1.0
+pytesseract==0.3.13
+Pillow==11.2.1
+gunicorn==23.0.0
+Scrapy==2.13.3
+Twisted<26
+django-celery-beat==2.8.1

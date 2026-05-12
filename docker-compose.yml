@@ -1,0 +1,84 @@
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-zhongbei_info}
+      MYSQL_USER: ${MYSQL_USER:-zhongbei}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhongbei}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root-password}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.14
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_MASTER_KEY:-change-meili-key}
+      MEILI_ENV: production
+    volumes:
+      - meili_data:/meili_data
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      meilisearch:
+        condition: service_started
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             gunicorn zhongbei_info.wsgi:application --bind 0.0.0.0:8000 --workers 2"
+    volumes:
+      - static_data:/app/staticfiles
+
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      web:
+        condition: service_started
+    command: ["celery", "-A", "zhongbei_info", "worker", "--loglevel=INFO", "--concurrency=1"]
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      web:
+        condition: service_started
+    command: ["celery", "-A", "zhongbei_info", "beat", "--loglevel=INFO"]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_started
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_data:/staticfiles:ro
+
+volumes:
+  mysql_data:
+  meili_data:
+  static_data:

@@ -1,0 +1,7 @@
+{% extends "aggregator/base.html" %}
+{% block title %}{{ source.name }} · 中北信息聚合{% endblock %}
+{% block content %}
+<h1>{{ source.name }}</h1>
+<p><a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.url }}</a></p>
+{% include "aggregator/_item_list.html" %}
+{% endblock %}
