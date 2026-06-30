@@ -2,7 +2,21 @@ from django.contrib import admin
 from django.utils import timezone
 from django.utils.text import slugify
 
-from .models import AIJob, Attachment, Category, ContentItem, ContentSource, CrawlJob, DuplicateGroup, RawDocument, Source, Tag
+from .models import (
+    AIJob,
+    AIUsageDaily,
+    Attachment,
+    Category,
+    ContentItem,
+    ContentSource,
+    CrawlFailure,
+    CrawlJob,
+    CrawlNetworkEvent,
+    DuplicateGroup,
+    RawDocument,
+    Source,
+    Tag,
+)
 from .services.ai import get_ai_provider
 from .services.dedupe import content_fingerprint
 from .services.extraction import _extract_text, _parse_published_at_with_confidence
@@ -22,13 +36,16 @@ class SourceAdmin(admin.ModelAdmin):
         "source_type",
         "priority",
         "enabled",
+        "crawl_enabled",
         "crawl_interval_minutes",
         "crawl_depth",
         "max_articles_per_run",
         "next_crawl_at",
+        "last_success_at",
+        "last_error_at",
         "failure_count",
     )
-    list_filter = ("source_type", "priority", "enabled")
+    list_filter = ("source_type", "priority", "enabled", "crawl_enabled")
     search_fields = ("name", "url", "notes")
     actions = [run_crawl_now]
 
@@ -146,14 +163,35 @@ class TagAdmin(admin.ModelAdmin):
 
 @admin.register(CrawlJob)
 class CrawlJobAdmin(admin.ModelAdmin):
-    list_display = ("source", "target_url", "status", "started_at", "finished_at")
+    list_display = (
+        "source",
+        "target_url",
+        "status",
+        "started_at",
+        "finished_at",
+        "discovered_count",
+        "success_count",
+        "new_count",
+        "updated_count",
+        "duplicate_skip_count",
+        "near_duplicate_skip_count",
+        "failed_url_count",
+        "direct_fetch_count",
+        "relay_fetch_count",
+        "ai_call_count",
+        "ai_skip_count",
+        "ai_fallback_count",
+    )
     list_filter = ("status",)
-    search_fields = ("target_url", "error_message")
+    search_fields = ("target_url", "error_message", "warning_message")
     readonly_fields = ("created_at", "updated_at")
 
 
 admin.site.register(RawDocument)
+admin.site.register(CrawlFailure)
+admin.site.register(CrawlNetworkEvent)
 admin.site.register(DuplicateGroup)
 admin.site.register(ContentSource)
 admin.site.register(Attachment)
 admin.site.register(AIJob)
+admin.site.register(AIUsageDaily)

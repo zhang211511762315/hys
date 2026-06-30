@@ -1,0 +1,13 @@
+<div class="toolbar">
+  <div class="sort-group">
+    <a href="?sort=relevance{% if date_from %}&amp;date_from={{ date_from }}{% endif %}{% if date_to %}&amp;date_to={{ date_to }}{% endif %}" class="{% if sort != 'date' %}active{% endif %}">按重要性</a>
+    <a href="?sort=date{% if date_from %}&amp;date_from={{ date_from }}{% endif %}{% if date_to %}&amp;date_to={{ date_to }}{% endif %}" class="{% if sort == 'date' %}active{% endif %}">按时间</a>
+  </div>
+  <form class="date-group" method="get">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="date" name="date_from" value="{{ date_from }}" placeholder="起始日期" aria-label="起始日期">
+    <span>~</span>
+    <input type="date" name="date_to" value="{{ date_to }}" placeholder="截止日期" aria-label="截止日期">
+    <button type="submit">筛选</button>
+  </form>
+</div>

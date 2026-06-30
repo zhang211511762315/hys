@@ -1,0 +1,16 @@
+{% if page.paginator.num_pages > 1 %}
+<nav style="display:flex;align-items:center;justify-content:center;gap:12px;margin-top:24px;padding:12px 0;">
+  {% if page.has_previous %}
+    <a href="?page=1{% if base_query %}&{{ base_query }}{% endif %}" style="padding:6px 12px;border:1px solid var(--line);border-radius:6px;color:var(--ink);text-decoration:none;">&laquo; 首页</a>
+    <a href="?page={{ page.previous_page_number }}{% if base_query %}&{{ base_query }}{% endif %}" style="padding:6px 12px;border:1px solid var(--line);border-radius:6px;color:var(--ink);text-decoration:none;">&lsaquo; 上一页</a>
+  {% endif %}
+  <span style="color:var(--muted);font-size:14px;">
+    第 {{ page.number }} / {{ page.paginator.num_pages }} 页
+    <span style="margin-left:6px;">(共 {{ page.paginator.count }} 条)</span>
+  </span>
+  {% if page.has_next %}
+    <a href="?page={{ page.next_page_number }}{% if base_query %}&{{ base_query }}{% endif %}" style="padding:6px 12px;border:1px solid var(--line);border-radius:6px;color:var(--ink);text-decoration:none;">下一页 &rsaquo;</a>
+    <a href="?page={{ page.paginator.num_pages }}{% if base_query %}&{{ base_query }}{% endif %}" style="padding:6px 12px;border:1px solid var(--line);border-radius:6px;color:var(--ink);text-decoration:none;">末页 &raquo;</a>
+  {% endif %}
+</nav>
+{% endif %}

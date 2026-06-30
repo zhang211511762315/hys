@@ -2,6 +2,9 @@
 {% block title %}搜索 · 中北信息聚合{% endblock %}
 {% block content %}
 <form class="searchbar" action="{% url 'aggregator:search' %}" method="get">
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <input type="hidden" name="date_from" value="{{ date_from }}">
+  <input type="hidden" name="date_to" value="{{ date_to }}">
   <input type="search" name="q" value="{{ query }}" placeholder="关键词" aria-label="关键词">
   <select name="category" aria-label="分类">
     <option value="">全部分类</option>
@@ -11,5 +14,9 @@
   </select>
   <button type="submit">搜索</button>
 </form>
-{% include "aggregator/_item_list.html" %}
+{% include "aggregator/_toolbar.html" %}
+{% with items=page.object_list %}
+  {% include "aggregator/_item_list.html" %}
+{% endwith %}
+{% include "aggregator/_pagination.html" %}
 {% endblock %}

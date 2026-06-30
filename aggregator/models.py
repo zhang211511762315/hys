@@ -51,14 +51,23 @@ class Source(TimeStampedModel):
         NORMAL = 50, "普通源"
         LOW = 100, "低频源"
 
+    class SourceGroup(models.TextChoices):
+        PORTAL = "portal", "主站/门户"
+        COLLEGE = "college", "学院"
+        ADMIN = "admin", "行政部门"
+        STUDENT_SERVICE = "student_service", "学生服务"
+        STUDENT_ORG = "student_org", "学生组织"
+        WECHAT = "wechat", "微信公众号"
+
     class ScheduleGroup(models.TextChoices):
         WEB_TWICE_DAILY = "web_twice_daily", "官网每日两次"
         SOCIAL_DAILY = "social_daily", "社媒每日一次"
         MANUAL = "manual", "仅手动"
 
     name = models.CharField(max_length=160)
-    url = models.URLField(max_length=1000, unique=True)
+    url = models.URLField(max_length=500, unique=True)
     source_type = models.CharField(max_length=40, choices=SourceType.choices)
+    source_group = models.CharField(max_length=30, choices=SourceGroup.choices, blank=True)
     priority = models.IntegerField(choices=Priority.choices, default=Priority.NORMAL)
     crawl_interval_minutes = models.PositiveIntegerField(default=360)
     crawl_depth = models.PositiveIntegerField(default=2)
@@ -96,6 +105,15 @@ class Source(TimeStampedModel):
                 self.schedule_group = self.ScheduleGroup.SOCIAL_DAILY
             else:
                 self.schedule_group = self.ScheduleGroup.WEB_TWICE_DAILY
+        if not self.source_group:
+            if self.source_type == self.SourceType.OFFICIAL_SITE:
+                self.source_group = self.SourceGroup.PORTAL
+            elif self.source_type == self.SourceType.COLLEGE_SITE:
+                self.source_group = self.SourceGroup.COLLEGE
+            elif self.source_type == self.SourceType.WECHAT_LINK:
+                self.source_group = self.SourceGroup.WECHAT
+            elif self.source_type == self.SourceType.SOCIAL_LINK:
+                self.source_group = self.SourceGroup.STUDENT_ORG
         if self._state.adding and self.crawl_interval_minutes == 360:
             if self.source_type in {self.SourceType.SOCIAL_LINK, self.SourceType.WECHAT_LINK, self.SourceType.MANUAL_URL}:
                 self.crawl_interval_minutes = 1440
@@ -116,11 +134,25 @@ class CrawlJob(TimeStampedModel):
         FAILED = "failed", "失败"
 
     source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="crawl_jobs")
-    target_url = models.URLField(max_length=1000)
+    target_url = models.URLField(max_length=500)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True)
+    warning_message = models.TextField(blank=True)
+    listing_pages_count = models.PositiveIntegerField(default=0)
+    discovered_count = models.PositiveIntegerField(default=0)
+    success_count = models.PositiveIntegerField(default=0)
+    new_count = models.PositiveIntegerField(default=0)
+    updated_count = models.PositiveIntegerField(default=0)
+    duplicate_skip_count = models.PositiveIntegerField(default=0)
+    failed_url_count = models.PositiveIntegerField(default=0)
+    direct_fetch_count = models.PositiveIntegerField(default=0)
+    relay_fetch_count = models.PositiveIntegerField(default=0)
+    near_duplicate_skip_count = models.PositiveIntegerField(default=0)
+    ai_call_count = models.PositiveIntegerField(default=0)
+    ai_skip_count = models.PositiveIntegerField(default=0)
+    ai_fallback_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ["-created_at"]
@@ -131,11 +163,54 @@ class CrawlJob(TimeStampedModel):
         return f"{self.source} - {self.status}"
 
 
+class CrawlNetworkEvent(TimeStampedModel):
+    schedule_group = models.CharField(max_length=40, blank=True)
+    checked_count = models.PositiveIntegerField(default=0)
+    reachable_count = models.PositiveIntegerField(default=0)
+    reason = models.CharField(max_length=200)
+    probe_urls = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "抓取网络事件"
+        verbose_name_plural = "抓取网络事件"
+
+    def __str__(self):
+        group = self.schedule_group or "due"
+        return f"{group}: {self.reason}"
+
+
+class CrawlFailure(TimeStampedModel):
+    class FailureClass(models.TextChoices):
+        TRANSIENT = "transient", "临时失败"
+        NETWORK = "network", "网络失败"
+        PERMANENT = "permanent", "永久失败"
+
+    crawl_job = models.ForeignKey(CrawlJob, on_delete=models.CASCADE, related_name="failures")
+    source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="crawl_failures")
+    url = models.URLField(max_length=500)
+    error_type = models.CharField(max_length=120, blank=True)
+    error_message = models.TextField(blank=True)
+    failure_class = models.CharField(max_length=30, choices=FailureClass.choices, default=FailureClass.TRANSIENT)
+    retry_count = models.PositiveIntegerField(default=0)
+    next_retry_at = models.DateTimeField(null=True, blank=True)
+    permanent = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "抓取失败URL"
+        verbose_name_plural = "抓取失败URL"
+
+    def __str__(self):
+        return f"{self.source} - {self.url}"
+
+
 class RawDocument(TimeStampedModel):
     source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="raw_documents")
     crawl_job = models.ForeignKey(CrawlJob, on_delete=models.SET_NULL, null=True, blank=True)
-    url = models.URLField(max_length=1000)
-    final_url = models.URLField(max_length=1000, blank=True)
+    url = models.URLField(max_length=500)
+    final_url = models.URLField(max_length=500, blank=True)
     title = models.CharField(max_length=300, blank=True)
     html = models.TextField(blank=True)
     extracted_text = models.TextField(blank=True)
@@ -201,7 +276,8 @@ class ContentItem(TimeStampedModel):
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     tags = models.ManyToManyField(Tag, blank=True)
     title = models.CharField(max_length=300)
-    canonical_url = models.URLField(max_length=1000, unique=True)
+    title_fingerprint = models.CharField(max_length=160, blank=True, db_index=True)
+    canonical_url = models.URLField(max_length=500, unique=True)
     summary = models.TextField(blank=True)
     content_text = models.TextField()
     content_hash = models.CharField(max_length=64, db_index=True, blank=True)
@@ -232,7 +308,7 @@ class ContentSource(TimeStampedModel):
     content_item = models.ForeignKey(ContentItem, on_delete=models.CASCADE, related_name="content_sources")
     source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="discovered_content_sources")
     raw_document = models.ForeignKey(RawDocument, on_delete=models.SET_NULL, null=True, blank=True)
-    url = models.URLField(max_length=1000)
+    url = models.URLField(max_length=500)
     source_title = models.CharField(max_length=300, blank=True)
     source_published_at = models.DateTimeField(null=True, blank=True)
     first_seen_at = models.DateTimeField(auto_now_add=True)
@@ -257,7 +333,7 @@ class Attachment(TimeStampedModel):
         OTHER = "other", "其他"
 
     content_item = models.ForeignKey(ContentItem, on_delete=models.CASCADE, related_name="attachments")
-    source_url = models.URLField(max_length=1000)
+    source_url = models.URLField(max_length=500)
     attachment_type = models.CharField(max_length=20, choices=AttachmentType.choices, default=AttachmentType.IMAGE)
     ocr_text = models.TextField(blank=True)
     processed = models.BooleanField(default=False)
@@ -290,3 +366,27 @@ class AIJob(TimeStampedModel):
 
     def __str__(self):
         return f"{self.provider} - {self.status}"
+
+
+class AIUsageDaily(TimeStampedModel):
+    usage_date = models.DateField()
+    provider = models.CharField(max_length=40)
+    model = models.CharField(max_length=80)
+    request_count = models.PositiveIntegerField(default=0)
+    prompt_cache_hit_tokens = models.PositiveIntegerField(default=0)
+    prompt_cache_miss_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    estimated_prompt_tokens = models.PositiveIntegerField(default=0)
+    estimated_completion_tokens = models.PositiveIntegerField(default=0)
+    cost_cny = models.DecimalField(max_digits=10, decimal_places=6, default=0)
+
+    class Meta:
+        ordering = ["-usage_date", "provider", "model"]
+        constraints = [
+            models.UniqueConstraint(fields=["usage_date", "provider", "model"], name="unique_ai_usage_daily")
+        ]
+        verbose_name = "AI每日用量"
+        verbose_name_plural = "AI每日用量"
+
+    def __str__(self):
+        return f"{self.usage_date} {self.provider}/{self.model}"

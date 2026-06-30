@@ -1,9 +1,15 @@
 import pytest
+from django.core.cache import cache
 from django.urls import reverse
 
 from django.utils import timezone
 
 from aggregator.models import Category, ContentItem, ContentSource, Source
+
+
+@pytest.fixture(autouse=True)
+def clear_page_cache():
+    cache.clear()
 
 
 @pytest.mark.django_db
@@ -30,6 +36,58 @@ def test_homepage_lists_published_items(client):
     assert response.status_code == 200
     assert "中北大学发布重要通知" in response.content.decode()
     assert "原文" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_homepage_displays_source_published_at(client):
+    source = Source.objects.create(
+        name="中北大学官网",
+        url="https://www.nuc.edu.cn/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    ContentItem.objects.create(
+        source=source,
+        title="显示原文时间",
+        canonical_url="https://www.nuc.edu.cn/info/1001/time.htm",
+        summary="摘要",
+        content_text="正文",
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+        published_at=timezone.datetime(2026, 5, 25, 18, 0, tzinfo=timezone.get_current_timezone()),
+        source_published_at=timezone.datetime(2026, 5, 20, 9, 30, tzinfo=timezone.get_current_timezone()),
+    )
+
+    response = client.get(reverse("aggregator:home"))
+    html = response.content.decode()
+
+    assert "2026-05-20 09:30" in html
+    assert "2026-05-25 18:00" not in html
+
+
+@pytest.mark.django_db
+def test_homepage_displays_year_only_dates_as_uncertain(client):
+    source = Source.objects.create(
+        name="中北大学官网",
+        url="https://www.nuc.edu.cn/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    ContentItem.objects.create(
+        source=source,
+        title="年份级日期",
+        canonical_url="https://www.nuc.edu.cn/info/1001/year.htm",
+        summary="摘要",
+        content_text="正文",
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+        date_confidence=ContentItem.DateConfidence.YEAR_ONLY,
+        source_published_at=timezone.datetime(2026, 1, 1, tzinfo=timezone.get_current_timezone()),
+    )
+
+    response = client.get(reverse("aggregator:home"))
+    html = response.content.decode()
+
+    assert "2026 年（日期待确认）" in html
+    assert "2026-01-01 00:00" not in html
 
 
 @pytest.mark.django_db
@@ -100,6 +158,30 @@ def test_items_before_public_since_date_are_hidden(client):
 
     assert response.status_code == 200
     assert "Old public item" not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_future_source_dates_are_hidden(client):
+    source = Source.objects.create(
+        name="NUC",
+        url="https://www.nuc.edu.cn/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    ContentItem.objects.create(
+        source=source,
+        title="Future public item",
+        canonical_url="https://www.nuc.edu.cn/info/1001/future.htm",
+        summary="Future",
+        content_text="Future",
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+        source_published_at=timezone.now() + timezone.timedelta(days=1),
+    )
+
+    response = client.get(reverse("aggregator:home"))
+
+    assert response.status_code == 200
+    assert "Future public item" not in response.content.decode()
 
 
 @pytest.mark.django_db

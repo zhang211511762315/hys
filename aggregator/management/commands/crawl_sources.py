@@ -21,20 +21,47 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         sources = self._select_sources(options)
         total_items = 0
+        failed_sources = []
         for source in sources:
             original_max = source.max_articles_per_run
             if options["max_articles"]:
                 source.max_articles_per_run = options["max_articles"]
             self.stdout.write(f"Crawling #{source.id} {source.name} ...")
-            count = ingest_source(source)
+            try:
+                count = ingest_source(source)
+            except Exception as exc:
+                failed_sources.append(source)
+                source.max_articles_per_run = original_max
+                source.failure_count += 1
+                source.last_error_at = timezone.now()
+                source.next_crawl_at = source.last_error_at + timedelta(minutes=min(1440, 15 * source.failure_count))
+                source.save(update_fields=["max_articles_per_run", "failure_count", "last_error_at", "next_crawl_at", "updated_at"])
+                self.stderr.write(self.style.WARNING(f"  failed: {type(exc).__name__}: {exc}"))
+                continue
             total_items += count
             source.last_crawled_at = timezone.now()
+            source.last_success_at = source.last_crawled_at
             source.next_crawl_at = source.last_crawled_at + timedelta(minutes=source.crawl_interval_minutes)
             source.max_articles_per_run = original_max
             source.failure_count = 0
-            source.save(update_fields=["last_crawled_at", "next_crawl_at", "failure_count", "updated_at"])
+            source.save(
+                update_fields=[
+                    "last_crawled_at",
+                    "last_success_at",
+                    "next_crawl_at",
+                    "max_articles_per_run",
+                    "failure_count",
+                    "updated_at",
+                ]
+            )
             self.stdout.write(self.style.SUCCESS(f"  published/updated {count} item(s)"))
-        self.stdout.write(self.style.SUCCESS(f"Crawled {len(sources)} source(s), published/updated {total_items} item(s)."))
+        succeeded = len(sources) - len(failed_sources)
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Crawled {succeeded}/{len(sources)} source(s), published/updated {total_items} item(s), "
+                f"failed {len(failed_sources)} source(s)."
+            )
+        )
 
     def _select_sources(self, options) -> list[Source]:
         queryset: QuerySet[Source] = Source.objects.filter(enabled=True).order_by("priority", "id")

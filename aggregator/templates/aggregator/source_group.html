@@ -1,12 +1,9 @@
 {% extends "aggregator/base.html" %}
-{% block title %}中北信息聚合{% endblock %}
+{% block title %}{{ source_group_label }} - 中北信息聚合{% endblock %}
 {% block content %}
-<form class="searchbar" action="{% url 'aggregator:search' %}" method="get">
-  <input type="search" name="q" placeholder="搜索通知、学院、实验室、社团" aria-label="搜索">
-  <button type="submit">搜索</button>
-</form>
 <div class="grid">
   <section>
+    <h2>{{ source_group_label }}</h2>
     {% include "aggregator/_toolbar.html" %}
     {% with items=page.object_list %}
       {% include "aggregator/_item_list.html" %}

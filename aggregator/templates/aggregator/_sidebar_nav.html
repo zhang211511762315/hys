@@ -1,0 +1,12 @@
+<h2>分类</h2>
+{% for category in categories %}
+  <p><a href="{% url 'aggregator:category_detail' category.slug %}">{{ category.name }}</a></p>
+{% empty %}
+  <p>暂无分类</p>
+{% endfor %}
+<h2>来源</h2>
+{% for value, label, count in source_groups %}
+  <p><a href="{% url 'aggregator:source_group' value %}">{{ label }}</a> <span class="count">({{ count }})</span></p>
+{% empty %}
+  <p>暂无来源</p>
+{% endfor %}

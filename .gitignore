@@ -8,5 +8,7 @@ db.sqlite3
 staticfiles/
 media/
 *.log
+admin-credentials.txt
+wewe-rss/data/
 .playwright-mcp/
 docs/deploy-caddy-gunicorn-systemd-prompt.md

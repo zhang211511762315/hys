@@ -42,6 +42,19 @@ def test_candidate_gate_publishes_valid_2026_article():
     assert decision.extraction_quality_score >= 60
 
 
+def test_candidate_gate_publishes_2026_article_with_year_only_date():
+    document = make_document(
+        published_at=timezone.make_aware(datetime(2026, 1, 1)),
+        date_confidence=ContentItem.DateConfidence.YEAR_ONLY,
+    )
+
+    decision = evaluate_candidate(make_source(), document)
+
+    assert decision.review_status == ContentItem.ReviewStatus.PUBLISHED
+    assert decision.is_public is True
+    assert decision.date_confidence == ContentItem.DateConfidence.YEAR_ONLY
+
+
 def test_candidate_gate_blocks_articles_before_2026():
     document = make_document(published_at=timezone.make_aware(datetime(2025, 12, 31)))
 
@@ -50,6 +63,16 @@ def test_candidate_gate_blocks_articles_before_2026():
     assert decision.review_status == ContentItem.ReviewStatus.OUT_OF_RANGE
     assert decision.is_public is False
     assert "before 2026-01-01" in decision.review_reason
+
+
+def test_candidate_gate_sends_future_dates_to_review():
+    document = make_document(published_at=timezone.now() + timezone.timedelta(days=1))
+
+    decision = evaluate_candidate(make_source(), document)
+
+    assert decision.review_status == ContentItem.ReviewStatus.NEEDS_REVIEW
+    assert decision.is_public is False
+    assert "future" in decision.review_reason
 
 
 def test_candidate_gate_sends_unknown_dates_to_review():

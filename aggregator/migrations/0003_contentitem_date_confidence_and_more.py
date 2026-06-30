@@ -130,7 +130,7 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
-                ('url', models.URLField(max_length=1000)),
+                ('url', models.URLField(max_length=500)),
                 ('source_title', models.CharField(blank=True, max_length=300)),
                 ('source_published_at', models.DateTimeField(blank=True, null=True)),
                 ('first_seen_at', models.DateTimeField(auto_now_add=True)),

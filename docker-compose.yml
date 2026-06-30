@@ -1,13 +1,31 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   mysql:
     image: mysql:8.4
     restart: unless-stopped
+    logging: *default-logging
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-zhongbei_info}
       MYSQL_USER: ${MYSQL_USER:-zhongbei}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhongbei}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root-password}
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    command:
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+      - "--innodb-buffer-pool-size=64M"
+      - "--innodb-log-buffer-size=8M"
+      - "--max-connections=20"
+      - "--tmp-table-size=16M"
+      - "--max-heap-table-size=16M"
+      - "--table-open-cache=400"
+      - "--sort-buffer-size=256K"
+      - "--read-buffer-size=256K"
+      - "--join-buffer-size=256K"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -19,11 +37,13 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
 
   meilisearch:
     image: getmeili/meilisearch:v1.14
     restart: unless-stopped
+    logging: *default-logging
     environment:
       MEILI_MASTER_KEY: ${MEILISEARCH_MASTER_KEY:-change-meili-key}
       MEILI_ENV: production
@@ -33,6 +53,7 @@ services:
   web:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     depends_on:
       mysql:
@@ -44,31 +65,34 @@ services:
     command: >
       sh -c "python manage.py migrate &&
              python manage.py collectstatic --noinput &&
-             gunicorn zhongbei_info.wsgi:application --bind 0.0.0.0:8000 --workers 2"
+             gunicorn zhongbei_info.wsgi:application --bind 0.0.0.0:8000 --workers 1 --timeout 60 --max-requests 500 --max-requests-jitter 50"
     volumes:
       - static_data:/app/staticfiles
 
   worker:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     depends_on:
       web:
         condition: service_started
-    command: ["celery", "-A", "zhongbei_info", "worker", "--loglevel=INFO", "--concurrency=1"]
+    command: ["celery", "-A", "zhongbei_info", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=100", "--max-memory-per-child=200000"]
 
   scheduler:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     depends_on:
       web:
         condition: service_started
-    command: ["celery", "-A", "zhongbei_info", "beat", "--loglevel=INFO"]
+    command: ["celery", "-A", "zhongbei_info", "beat", "--loglevel=INFO", "--scheduler=django_celery_beat.schedulers:DatabaseScheduler"]
 
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       web:
         condition: service_started

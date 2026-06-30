@@ -3,5 +3,9 @@
 {% block content %}
 <h1>{{ source.name }}</h1>
 <p><a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.url }}</a></p>
-{% include "aggregator/_item_list.html" %}
+{% include "aggregator/_toolbar.html" %}
+{% with items=page.object_list %}
+  {% include "aggregator/_item_list.html" %}
+{% endwith %}
+{% include "aggregator/_pagination.html" %}
 {% endblock %}

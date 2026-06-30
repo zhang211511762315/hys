@@ -94,6 +94,8 @@ def _looks_like_article_url(url: str) -> bool:
         return True
     if path.endswith("/content.jsp") and "wbnewsid=" in query:
         return True
+    if "mp.weixin.qq.com" in (parsed.hostname or "") and path.startswith("/s/"):
+        return True
     return False
 
 

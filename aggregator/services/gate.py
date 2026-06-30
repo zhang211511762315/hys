@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from django.conf import settings
 from django.utils import timezone
@@ -56,6 +56,14 @@ def evaluate_candidate(source: Source, document: ExtractedDocument) -> Candidate
             extraction_quality_score=quality,
             review_reason="published before 2026-01-01",
         )
+    if document.published_at and document.published_at > timezone.now() + timedelta(days=1):
+        return CandidateDecision(
+            review_status=ContentItem.ReviewStatus.NEEDS_REVIEW,
+            is_public=False,
+            date_confidence=confidence,
+            extraction_quality_score=quality,
+            review_reason="published date is in the future",
+        )
     if confidence == ContentItem.DateConfidence.UNKNOWN:
         return CandidateDecision(
             review_status=ContentItem.ReviewStatus.NEEDS_REVIEW,
@@ -64,15 +72,7 @@ def evaluate_candidate(source: Source, document: ExtractedDocument) -> Candidate
             extraction_quality_score=quality,
             review_reason="published date unknown",
         )
-    if confidence != ContentItem.DateConfidence.EXACT:
-        return CandidateDecision(
-            review_status=ContentItem.ReviewStatus.NEEDS_REVIEW,
-            is_public=False,
-            date_confidence=confidence,
-            extraction_quality_score=quality,
-            review_reason=f"published date confidence is {confidence}",
-        )
-    if quality < 45:
+    if quality < 15:
         return CandidateDecision(
             review_status=ContentItem.ReviewStatus.NEEDS_REVIEW,
             is_public=False,
@@ -110,7 +110,7 @@ def score_extraction_quality(title: str, text: str) -> int:
     elif length >= 50:
         score += 15
     elif length >= 30:
-        score += 50
+        score += 5
     if title and title[:20] in clean_text:
         score += 10
     nav_hits = sum(1 for term in NAVIGATION_TERMS if term in clean_text)
@@ -121,7 +121,7 @@ def score_extraction_quality(title: str, text: str) -> int:
     if "发布时间" in clean_text or "发布日期" in clean_text:
         score += 10
     if "ICP备" in clean_text or "公网安备" in clean_text:
-        score -= 20
+        score -= 10
     return max(0, min(score, 100))
 
 

@@ -1,4 +1,5 @@
 {% extends "aggregator/base.html" %}
+{% load aggregator_extras %}
 {% block title %}{{ item.title }} · 中北信息聚合{% endblock %}
 {% block content %}
 <article class="item">
@@ -6,7 +7,7 @@
   <div class="meta">
     <a href="{% url 'aggregator:source_detail' item.source.id %}">{{ item.source.name }}</a>
     {% if item.category %} · <a href="{% url 'aggregator:category_detail' item.category.slug %}">{{ item.category.name }}</a>{% endif %}
-    {% if item.published_at %} · {{ item.published_at|date:"Y-m-d H:i" }}{% endif %}
+    {% with display_date=item|display_item_date %}{% if display_date %} · {{ display_date }}{% endif %}{% endwith %}
   </div>
   <p class="summary">{{ item.summary }}</p>
   <div class="tags">

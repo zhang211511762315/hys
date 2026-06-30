@@ -91,14 +91,43 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+CACHE_URL = os.getenv("CACHE_URL", "")
+if CACHE_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": CACHE_URL,
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "zhongbei-info",
+        }
+    }
+PAGE_CACHE_SECONDS = int(os.getenv("PAGE_CACHE_SECONDS", "300"))
+PAGE_CACHE_DETAIL_SECONDS = int(os.getenv("PAGE_CACHE_DETAIL_SECONDS", "600"))
+
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/1")
+CELERY_IMPORTS = ("aggregator.tasks_wewe_rss",)
 CELERY_BEAT_SCHEDULE = {}
+
+WEWE_RSS_FEED_URL = os.getenv("WEWE_RSS_FEED_URL", "http://localhost:4000/feeds/all.atom")
+WEWE_RSS_AUTH_CODE = os.getenv("WEWE_RSS_AUTH_CODE", "")
+WEWE_RSS_SOURCE_NAME = os.getenv("WEWE_RSS_SOURCE_NAME", "微信公众号")
 
 AI_PROVIDER = os.getenv("AI_PROVIDER", "rules")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_DAILY_BUDGET_CNY = os.getenv("DEEPSEEK_DAILY_BUDGET_CNY", "0.5")
+DEEPSEEK_USD_TO_CNY = os.getenv("DEEPSEEK_USD_TO_CNY", "7.3")
+DEEPSEEK_MAX_OUTPUT_TOKENS = int(os.getenv("DEEPSEEK_MAX_OUTPUT_TOKENS", "500"))
+DEEPSEEK_INPUT_CACHE_HIT_USD_PER_MILLION = os.getenv("DEEPSEEK_INPUT_CACHE_HIT_USD_PER_MILLION", "0.0028")
+DEEPSEEK_INPUT_CACHE_MISS_USD_PER_MILLION = os.getenv("DEEPSEEK_INPUT_CACHE_MISS_USD_PER_MILLION", "0.14")
+DEEPSEEK_OUTPUT_USD_PER_MILLION = os.getenv("DEEPSEEK_OUTPUT_USD_PER_MILLION", "0.28")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:0.6b")
 
@@ -113,10 +142,27 @@ MEILISEARCH_MASTER_KEY = os.getenv("MEILISEARCH_MASTER_KEY", "")
 MEILISEARCH_INDEX = os.getenv("MEILISEARCH_INDEX", "content_items")
 
 PUBLIC_SITE_BASE_URL = os.getenv("PUBLIC_SITE_BASE_URL", "http://127.0.0.1:8000")
+CRAWL_USER_AGENT = os.getenv("CRAWL_USER_AGENT", "ZhongbeiInfoBot/0.1 (+https://example.local)")
 CRAWL_MAX_LINKS_PER_SOURCE = int(os.getenv("CRAWL_MAX_LINKS_PER_SOURCE", "50"))
 CRAWL_DEFAULT_DEPTH = int(os.getenv("CRAWL_DEFAULT_DEPTH", "2"))
 CRAWL_MAX_LIST_PAGES_PER_SOURCE = int(os.getenv("CRAWL_MAX_LIST_PAGES_PER_SOURCE", "8"))
+CRAWL_RETRY_FAILED_URLS_PER_RUN = int(os.getenv("CRAWL_RETRY_FAILED_URLS_PER_RUN", "10"))
+CRAWL_GROUP_PROBE_MIN_SOURCES = int(os.getenv("CRAWL_GROUP_PROBE_MIN_SOURCES", "3"))
+CRAWL_GROUP_PROBE_SIZE = int(os.getenv("CRAWL_GROUP_PROBE_SIZE", "3"))
 FETCH_TIMEOUT_SECONDS = float(os.getenv("FETCH_TIMEOUT_SECONDS", "12"))
+FETCH_CONNECT_TIMEOUT_SECONDS = float(os.getenv("FETCH_CONNECT_TIMEOUT_SECONDS", "5"))
+CRAWL_DIRECT_RETRY_ATTEMPTS = int(os.getenv("CRAWL_DIRECT_RETRY_ATTEMPTS", "2"))
+CRAWL_FORCE_IPV4_DOMAINS = [part.strip().lower() for part in os.getenv("CRAWL_FORCE_IPV4_DOMAINS", ".nuc.edu.cn,nuc.edu.cn").split(",") if part.strip()]
+CRAWL_DIRECT_FIRST = os.getenv("CRAWL_DIRECT_FIRST", "1") == "1"
+CRAWL_RELAY_URL = os.getenv("CRAWL_RELAY_URL", "")
+CRAWL_RELAY_TOKEN = os.getenv("CRAWL_RELAY_TOKEN", "")
+CRAWL_RELAY_TIMEOUT_SECONDS = float(os.getenv("CRAWL_RELAY_TIMEOUT_SECONDS", "20"))
+CRAWL_RELAY_ON_ERRORS = os.getenv("CRAWL_RELAY_ON_ERRORS", "connect,dns,network,timeout,5xx,429")
+CRAWL_FAILURE_RETRY_BASE_MINUTES = int(os.getenv("CRAWL_FAILURE_RETRY_BASE_MINUTES", "30"))
+CRAWL_FAILURE_RETRY_MAX_MINUTES = int(os.getenv("CRAWL_FAILURE_RETRY_MAX_MINUTES", "1440"))
+CRAWL_NEAR_DUPLICATE_TEXT_THRESHOLD = float(os.getenv("CRAWL_NEAR_DUPLICATE_TEXT_THRESHOLD", "0.88"))
+CRAWL_EMPLOYMENT_NOTICE_TYPE_IDS = [part.strip() for part in os.getenv("CRAWL_EMPLOYMENT_NOTICE_TYPE_IDS", "10831,9571544,9571539,10834,9571538,9571532").split(",") if part.strip()]
+CRAWL_EMPLOYMENT_PAGE_SIZE = int(os.getenv("CRAWL_EMPLOYMENT_PAGE_SIZE", "15"))
 CRAWL_SINCE_DATE = os.getenv("CRAWL_SINCE_DATE", "2026-01-01")
 SCRAPY_MAX_PAGES_PER_SOURCE = int(os.getenv("SCRAPY_MAX_PAGES_PER_SOURCE", "5000"))
 SCRAPY_MAX_DEPTH = int(os.getenv("SCRAPY_MAX_DEPTH", "6"))
