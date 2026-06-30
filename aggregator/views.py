@@ -30,6 +30,7 @@ def search(request):
     query = request.GET.get("q", "").strip()
     category_slug = request.GET.get("category", "").strip()
     items, ctx = _apply_sort_and_date_range(request, _published_items())
+    sort = ctx["sort"]
     if query:
         meili_hits = meili_search(query, {"category": category_slug} if category_slug else None)
         if meili_hits:

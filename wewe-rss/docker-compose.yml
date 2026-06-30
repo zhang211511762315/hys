@@ -6,12 +6,20 @@ services:
     container_name: wewe-rss
     restart: unless-stopped
     ports:
-      - 4000:4000
+      - 127.0.0.1:4000:4000
     environment:
       - DATABASE_TYPE=sqlite
       - AUTH_CODE=${WEWE_RSS_AUTH_CODE:?set WEWE_RSS_AUTH_CODE}
-      - SERVER_ORIGIN_URL=http://43.163.198.120:4000
+      - SERVER_ORIGIN_URL=http://127.0.0.1:4000
       - CRON_EXPRESSION=35 5,17 * * *
       - TZ=Asia/Shanghai
     volumes:
       - ./data:/app/data
+    networks:
+      - default
+      - hys
+
+networks:
+  hys:
+    external: true
+    name: hys_default

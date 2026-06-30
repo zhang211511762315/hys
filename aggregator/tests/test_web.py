@@ -256,3 +256,59 @@ def test_new_social_source_defaults_to_daily_crawl():
     )
 
     assert source.crawl_interval_minutes == 1440
+
+
+@pytest.mark.django_db
+def test_search_with_meili_hits_uses_sort_context(client, monkeypatch):
+    source = Source.objects.create(
+        name="创新创业学院",
+        url="https://cxcy.nuc.edu.cn/",
+        source_type=Source.SourceType.COLLEGE_SITE,
+    )
+    item = ContentItem.objects.create(
+        source=source,
+        title="关于创新创业学院举办教学沙龙的通知",
+        canonical_url="https://cxcy.nuc.edu.cn/info/1001/search.htm",
+        summary="创新创业学院通知",
+        content_text="教学沙龙",
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+        source_published_at=timezone.datetime(2026, 6, 20, tzinfo=timezone.get_current_timezone()),
+    )
+
+    monkeypatch.setattr("aggregator.views.meili_search", lambda query, filters=None: [{"id": item.id}])
+
+    response = client.get(reverse("aggregator:search"), {"q": "创新创业学院"})
+
+    assert response.status_code == 200
+    assert "关于创新创业学院举办教学沙龙的通知" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_robots_txt_points_to_sitemap(client, settings):
+    settings.PUBLIC_SITE_BASE_URL = "http://testserver"
+
+    response = client.get("/robots.txt")
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("text/plain")
+    assert "Disallow: /admin/" in response.content.decode()
+    assert "Sitemap: http://testserver/sitemap.xml" in response.content.decode()
+
+
+def test_favicon_returns_image(client):
+    response = client.get("/favicon.ico")
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("image/svg+xml")
+
+
+@pytest.mark.django_db
+def test_sitemap_xml_includes_homepage(client, settings):
+    settings.PUBLIC_SITE_BASE_URL = "http://testserver"
+
+    response = client.get("/sitemap.xml")
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("application/xml")
+    assert "<loc>http://testserver/</loc>" in response.content.decode()
