@@ -45,8 +45,23 @@ def create_research_run(goal: str, client_request_id: str) -> tuple[AgentRun, bo
     return run, created
 
 
+def cancel_research_run(run: AgentRun) -> bool:
+    terminal = {AgentRun.Status.SUCCEEDED, AgentRun.Status.FAILED, AgentRun.Status.CANCELLED}
+    with transaction.atomic():
+        locked_run = AgentRun.objects.select_for_update().get(id=run.id)
+        if locked_run.status in terminal:
+            return False
+        locked_run.status = AgentRun.Status.CANCELLED
+        locked_run.finished_at = timezone.now()
+        locked_run.save(update_fields=["status", "finished_at", "updated_at"])
+        append_event(locked_run, "run.cancelled", {"status": AgentRun.Status.CANCELLED})
+    return True
+
+
 def execute_research_run(run_id: int) -> dict[str, Any]:
     run = AgentRun.objects.get(id=run_id)
+    if run.status == AgentRun.Status.CANCELLED:
+        return {"status": "cancelled"}
     registry = build_default_registry()
     try:
         run.status = AgentRun.Status.PLANNING

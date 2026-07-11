@@ -1,9 +1,15 @@
 import json
 
 import pytest
+from django.core.cache import cache
 from django.test import Client
 
 from aggregator.models import Category, ContentItem, Source
+
+
+@pytest.fixture(autouse=True)
+def clear_research_cache():
+    cache.clear()
 @pytest.fixture
 def deadline_item():
     source = Source.objects.create(
@@ -100,3 +106,57 @@ def test_research_event_stream_includes_stable_sse_ids():
     assert "id: 1\nevent: run.created" in body
     assert "id: 2\nevent: plan.created" in body
     assert 'data: {"step_count": 2}' in body
+
+
+@pytest.mark.django_db
+def test_research_api_enforces_daily_limit_for_new_requests(monkeypatch, settings):
+    settings.RESEARCH_AGENT_DAILY_LIMIT = 1
+    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    client = Client()
+
+    first = client.post(
+        "/api/v1/research-runs",
+        data=json.dumps({"goal": "查询就业信息", "client_request_id": "daily-limit-0001"}),
+        content_type="application/json",
+    )
+    second = client.post(
+        "/api/v1/research-runs",
+        data=json.dumps({"goal": "查询科研活动", "client_request_id": "daily-limit-0002"}),
+        content_type="application/json",
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 429
+    assert second.json()["error"] == "daily limit exceeded"
+
+
+@pytest.mark.django_db
+def test_cancel_research_run_marks_terminal_and_emits_event():
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import create_research_run
+
+    run, _ = create_research_run("查询通知", "cancel-request-01")
+    response = Client().post(f"/api/v1/research-runs/{run.public_id}/cancel")
+    run.refresh_from_db()
+
+    assert response.status_code == 200
+    assert run.status == AgentRun.Status.CANCELLED
+    assert run.events.filter(event_type="run.cancelled").exists()
+
+
+@pytest.mark.django_db
+def test_session_memory_is_used_only_when_secure_mode_enabled(settings):
+    from agent_runtime.models import RagMessage, RagSession
+    from agent_runtime.research.memory import resolve_goal_with_memory
+
+    session = RagSession.objects.create(session_key="memory-session", title="就业活动")
+    RagMessage.objects.create(session=session, role=RagMessage.Role.USER, content="帮我找近期就业活动")
+    RagMessage.objects.create(session=session, role=RagMessage.Role.ASSISTANT, content="找到了三项就业活动")
+
+    settings.RESEARCH_AGENT_SESSION_MEMORY_ENABLED = False
+    assert resolve_goal_with_memory("这些活动的截止时间", session) == "这些活动的截止时间"
+
+    settings.RESEARCH_AGENT_SESSION_MEMORY_ENABLED = True
+    resolved = resolve_goal_with_memory("这些活动的截止时间", session)
+    assert "帮我找近期就业活动" in resolved
+    assert resolved.endswith("当前目标：这些活动的截止时间")

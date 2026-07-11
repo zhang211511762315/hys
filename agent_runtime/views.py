@@ -2,6 +2,7 @@ import asyncio
 import json
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Count, Sum
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
@@ -11,7 +12,7 @@ from django.views.decorators.http import require_GET, require_POST
 from aggregator.models import AIUsageDaily, ContentItem, CrawlFailure, Source
 
 from .models import AgentRun, ContentChunk, LLMUsageEvent, RagMessage, RagSession
-from .research.runtime import create_research_run
+from .research.runtime import cancel_research_run, create_research_run
 from .research.schemas import CreateResearchRunInput
 from .services import answer_question_events, new_session_key, sse_event
 from .tasks import execute_research_run_task
@@ -152,7 +153,25 @@ def research_runs(request):
         payload = CreateResearchRunInput.model_validate_json(request.body)
     except Exception:
         return JsonResponse({"error": "invalid request"}, status=400)
-    run, created = create_research_run(payload.goal, payload.client_request_id)
+    existing = AgentRun.objects.filter(client_request_id=payload.client_request_id).first()
+    if existing is not None:
+        run, created = existing, False
+    else:
+        client_ip = _client_ip(request)
+        if not _consume_daily_research_quota(client_ip):
+            return JsonResponse({"error": "daily limit exceeded"}, status=429)
+        active_statuses = [
+            AgentRun.Status.QUEUED,
+            AgentRun.Status.PLANNING,
+            AgentRun.Status.EXECUTING,
+            AgentRun.Status.VERIFYING,
+            AgentRun.Status.RUNNING,
+        ]
+        if AgentRun.objects.filter(trigger=f"research_api:{client_ip}", status__in=active_statuses).count() >= settings.RESEARCH_AGENT_CONCURRENT_LIMIT:
+            return JsonResponse({"error": "concurrent limit exceeded"}, status=429)
+        run, created = create_research_run(payload.goal, payload.client_request_id)
+        run.trigger = f"research_api:{client_ip}"
+        run.save(update_fields=["trigger", "updated_at"])
     if created:
         execute_research_run_task.delay(str(run.public_id))
     return JsonResponse(
@@ -163,6 +182,16 @@ def research_runs(request):
         },
         status=202 if created else 200,
     )
+
+
+@require_POST
+def cancel_research_run_view(request, run_id):
+    run = AgentRun.objects.filter(public_id=run_id).first()
+    if run is None:
+        return JsonResponse({"error": "not found"}, status=404)
+    cancelled = cancel_research_run(run)
+    run.refresh_from_db()
+    return JsonResponse({"run_id": str(run.public_id), "status": run.status, "cancelled": cancelled})
 
 
 @require_GET
@@ -199,6 +228,30 @@ def research_run_events(request, run_id):
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
     return response
+
+
+def _client_ip(request) -> str:
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()[:64]
+    return (request.META.get("REMOTE_ADDR") or "unknown")[:64]
+
+
+def _consume_daily_research_quota(client_ip: str) -> bool:
+    limit = max(0, int(settings.RESEARCH_AGENT_DAILY_LIMIT))
+    if limit == 0:
+        return False
+    key = f"research-agent:daily:{timezone.localdate().isoformat()}:{client_ip}"
+    if cache.add(key, 1, timeout=60 * 60 * 26):
+        return True
+    count = cache.incr(key)
+    if count <= limit:
+        return True
+    try:
+        cache.decr(key)
+    except ValueError:
+        pass
+    return False
 
 
 def _display_eval_metrics(metrics: dict) -> dict:

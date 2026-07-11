@@ -1,6 +1,7 @@
 from decimal import Decimal
 import uuid
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -147,6 +148,36 @@ class ToolInvocation(TimeStampedModel):
         constraints = [
             models.UniqueConstraint(fields=["run", "step_id"], name="unique_agent_tool_step")
         ]
+
+
+class AgentApproval(TimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "待审批"
+        EXECUTING = "executing", "执行中"
+        EXECUTED = "executed", "已执行"
+        REJECTED = "rejected", "已拒绝"
+        FAILED = "failed", "失败"
+
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    run = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="approvals")
+    tool_name = models.CharField(max_length=80)
+    tool_version = models.CharField(max_length=40, default="1")
+    payload_json = models.JSONField(default=dict, blank=True)
+    result_json = models.JSONField(default=dict, blank=True)
+    idempotency_key = models.CharField(max_length=160, unique=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    error_message = models.TextField(blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="agent_approval_decisions",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
 
 
 class ContentChunk(TimeStampedModel):
