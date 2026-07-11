@@ -1,16 +1,20 @@
 import asyncio
+import json
 
 from django.conf import settings
 from django.db.models import Count, Sum
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.utils import timezone
-from django.views.decorators.http import require_GET
+from django.views.decorators.http import require_GET, require_POST
 
 from aggregator.models import AIUsageDaily, ContentItem, CrawlFailure, Source
 
 from .models import AgentRun, ContentChunk, LLMUsageEvent, RagMessage, RagSession
+from .research.runtime import create_research_run
+from .research.schemas import CreateResearchRunInput
 from .services import answer_question_events, new_session_key, sse_event
+from .tasks import execute_research_run_task
 
 RAG_SESSION_COOKIE = "rag_session_key"
 RAG_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
@@ -140,6 +144,61 @@ def healthz(request):
         "open_failures": CrawlFailure.objects.filter(resolved_at__isnull=True).count(),
     }
     return JsonResponse(payload)
+
+
+@require_POST
+def research_runs(request):
+    try:
+        payload = CreateResearchRunInput.model_validate_json(request.body)
+    except Exception:
+        return JsonResponse({"error": "invalid request"}, status=400)
+    run, created = create_research_run(payload.goal, payload.client_request_id)
+    if created:
+        execute_research_run_task.delay(str(run.public_id))
+    return JsonResponse(
+        {
+            "run_id": str(run.public_id),
+            "status": run.status,
+            "events_url": f"/api/v1/research-runs/{run.public_id}/events",
+        },
+        status=202 if created else 200,
+    )
+
+
+@require_GET
+def research_run_detail(request, run_id):
+    run = AgentRun.objects.filter(public_id=run_id).first()
+    if run is None:
+        return JsonResponse({"error": "not found"}, status=404)
+    return JsonResponse(
+        {
+            "run_id": str(run.public_id),
+            "status": run.status,
+            "current_node": run.current_node,
+            "answer": (run.state_json or {}).get("answer"),
+            "metrics": run.metrics_json,
+        }
+    )
+
+
+@require_GET
+def research_run_events(request, run_id):
+    run = AgentRun.objects.filter(public_id=run_id).first()
+    if run is None:
+        return JsonResponse({"error": "not found"}, status=404)
+    try:
+        after = max(0, int(request.headers.get("Last-Event-ID") or request.GET.get("after") or 0))
+    except ValueError:
+        after = 0
+
+    def stream():
+        for event in run.events.filter(sequence__gt=after).order_by("sequence"):
+            yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(event.payload_json, ensure_ascii=False)}\n\n"
+
+    response = StreamingHttpResponse(stream(), content_type="text/event-stream; charset=utf-8")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response
 
 
 def _display_eval_metrics(metrics: dict) -> dict:

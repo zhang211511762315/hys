@@ -1,4 +1,5 @@
 from decimal import Decimal
+import uuid
 
 from django.db import models
 from django.utils import timezone
@@ -21,16 +22,29 @@ class AgentRun(TimeStampedModel):
         EVAL = "eval", "评测"
 
     class Status(models.TextChoices):
+        QUEUED = "queued", "排队中"
+        PLANNING = "planning", "规划中"
+        EXECUTING = "executing", "执行中"
+        VERIFYING = "verifying", "验证中"
+        WAITING_APPROVAL = "waiting_approval", "等待审批"
         RUNNING = "running", "运行中"
         SUCCEEDED = "succeeded", "成功"
         FAILED = "failed", "失败"
+        CANCELLED = "cancelled", "已取消"
 
     kind = models.CharField(max_length=40, choices=Kind.choices)
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    client_request_id = models.CharField(max_length=120, unique=True, null=True, blank=True)
+    goal = models.TextField(blank=True)
     trigger = models.CharField(max_length=120, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING)
     started_at = models.DateTimeField(default=timezone.now)
     finished_at = models.DateTimeField(null=True, blank=True)
     metrics_json = models.JSONField(default=dict, blank=True)
+    state_json = models.JSONField(default=dict, blank=True)
+    current_node = models.CharField(max_length=80, blank=True)
+    graph_version = models.CharField(max_length=40, default="research-v1")
+    prompt_version = models.CharField(max_length=40, default="research-v1")
     total_cost_cny = models.DecimalField(max_digits=10, decimal_places=6, default=Decimal("0"))
     error_message = models.TextField(blank=True)
 
@@ -92,6 +106,47 @@ class AgentStep(TimeStampedModel):
                 "updated_at",
             ]
         )
+
+
+class AgentEvent(TimeStampedModel):
+    run = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="events")
+    sequence = models.PositiveIntegerField()
+    event_type = models.CharField(max_length=80)
+    payload_json = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["sequence"]
+        constraints = [
+            models.UniqueConstraint(fields=["run", "sequence"], name="unique_agent_event_sequence")
+        ]
+
+
+class ToolInvocation(TimeStampedModel):
+    class Status(models.TextChoices):
+        RUNNING = "running", "运行中"
+        SUCCEEDED = "succeeded", "成功"
+        FAILED = "failed", "失败"
+        DENIED = "denied", "拒绝"
+
+    run = models.ForeignKey(AgentRun, on_delete=models.CASCADE, related_name="tool_invocations")
+    step_id = models.CharField(max_length=40)
+    tool_name = models.CharField(max_length=80)
+    tool_version = models.CharField(max_length=40, default="1")
+    risk_level = models.CharField(max_length=20, default="low")
+    permission = models.CharField(max_length=20, default="public")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING)
+    attempt = models.PositiveIntegerField(default=1)
+    input_json = models.JSONField(default=dict, blank=True)
+    output_json = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True)
+    duration_ms = models.PositiveIntegerField(default=0)
+    idempotency_key = models.CharField(max_length=160, blank=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["run", "step_id"], name="unique_agent_tool_step")
+        ]
 
 
 class ContentChunk(TimeStampedModel):
