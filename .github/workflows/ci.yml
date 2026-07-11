@@ -25,6 +25,8 @@ jobs:
         run: python manage.py check --settings=zhongbei_info.settings_test
       - name: Check migrations
         run: python manage.py makemigrations --check --dry-run --settings=zhongbei_info.settings_test
+      - name: Run zero-cost Agent evaluation
+        run: python manage.py research_agent_eval --json --settings=zhongbei_info.settings_test
       - name: Validate Compose
         run: |
           cp .env.example .env

@@ -8,3 +8,4 @@ test:
 check: test
 	$(PYTHON) manage.py check --settings=zhongbei_info.settings_test
 	$(PYTHON) manage.py makemigrations --check --dry-run --settings=zhongbei_info.settings_test
+	$(PYTHON) manage.py research_agent_eval --json --settings=zhongbei_info.settings_test
