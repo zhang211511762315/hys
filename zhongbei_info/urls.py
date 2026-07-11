@@ -8,5 +8,6 @@ urlpatterns = [
     path("favicon.ico", views.favicon, name="favicon"),
     path("sitemap.xml", views.sitemap_xml, name="sitemap_xml"),
     path("admin/", admin.site.urls),
+    path("", include("agent_runtime.urls")),
     path("", include("aggregator.urls")),
 ]

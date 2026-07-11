@@ -39,6 +39,17 @@ def test_homepage_lists_published_items(client):
 
 
 @pytest.mark.django_db
+def test_public_navigation_hides_admin_and_points_to_agent_project(client):
+    response = client.get(reverse("aggregator:home"))
+    html = response.content.decode()
+
+    assert response.status_code == 200
+    assert 'href="/admin/"' not in html
+    assert 'href="/agent/"' in html
+    assert "Agent 项目" in html
+
+
+@pytest.mark.django_db
 def test_homepage_displays_source_published_at(client):
     source = Source.objects.create(
         name="中北大学官网",

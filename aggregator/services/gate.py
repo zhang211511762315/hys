@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from django.conf import settings
 from django.utils import timezone
@@ -56,7 +56,7 @@ def evaluate_candidate(source: Source, document: ExtractedDocument) -> Candidate
             extraction_quality_score=quality,
             review_reason="published before 2026-01-01",
         )
-    if document.published_at and document.published_at > timezone.now() + timedelta(days=1):
+    if document.published_at and document.published_at > timezone.now():
         return CandidateDecision(
             review_status=ContentItem.ReviewStatus.NEEDS_REVIEW,
             is_public=False,
@@ -110,11 +110,13 @@ def score_extraction_quality(title: str, text: str) -> int:
     elif length >= 50:
         score += 15
     elif length >= 30:
-        score += 5
+        score += 20
     if title and title[:20] in clean_text:
-        score += 10
+        score += 25
     nav_hits = sum(1 for term in NAVIGATION_TERMS if term in clean_text)
     score -= min(35, nav_hits * 7)
+    if nav_hits == 0:
+        score += 15
     unique_lines = {line.strip() for line in clean_text.splitlines() if line.strip()}
     if len(unique_lines) >= 3:
         score += 10

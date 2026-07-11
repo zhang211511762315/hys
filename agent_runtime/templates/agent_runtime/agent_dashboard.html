@@ -1,0 +1,143 @@
+{% extends "aggregator/base.html" %}
+{% block title %}AI Agent 工程项目 · 中北信息聚合{% endblock %}
+{% block content %}
+<section class="hero">
+  <div class="tags">
+    <span class="tag">Django / Celery</span>
+    <span class="tag">RAG</span>
+    <span class="tag">Meilisearch</span>
+    <span class="tag">DeepSeek</span>
+    <span class="tag">工具调用 / MCP</span>
+  </div>
+  <h1>AI Agent 工程项目：校园公开信息采集与 RAG 问答系统</h1>
+  <p class="summary">
+    这是一个真实运行的信息聚合站：采集 Agent 定时抓取公开网页并完成抽取、OCR、去重、摘要分类和索引；
+    RAG 助手基于已发布内容回答问题，返回引用来源，并记录 token、费用、工作流步骤和 fallback 状态。
+  </p>
+  <div class="actions">
+    <a class="button" href="{% url 'agent_runtime:ask' %}">RAG 问答演示</a>
+    <a class="button secondary" href="{% url 'aggregator:home' %}">查看真实内容流</a>
+  </div>
+</section>
+
+<section class="metrics">
+  <div class="metric">信息源<strong>{{ source_count }}</strong></div>
+  <div class="metric">公开内容<strong>{{ published_count }}</strong></div>
+  <div class="metric">RAG 知识块<strong>{{ chunk_count }}</strong></div>
+  <div class="metric">待重试 URL<strong>{{ retry_queue_count }}</strong></div>
+</section>
+
+<section class="workflow" aria-label="Agent 工作流">
+  <div class="workflow-step">
+    <strong>1. 采集调度</strong>
+    Celery beat 按来源类型触发抓取，失败源进入退避和重试队列。
+  </div>
+  <div class="workflow-step">
+    <strong>2. 抽取与清洗</strong>
+    使用规则抽取、正文清洗、OCR 和发布时间解析，减少网页噪声。
+  </div>
+  <div class="workflow-step">
+    <strong>3. 去重与发布</strong>
+    内容指纹和近重复检测合并重复来源，只公开审核通过的摘要。
+  </div>
+  <div class="workflow-step">
+    <strong>4. RAG 索引</strong>
+    已发布内容切分为 chunk，同步到 Meilisearch，保留来源和详情页引用。
+  </div>
+  <div class="workflow-step">
+    <strong>5. 问答生成</strong>
+    检索上下文后调用 DeepSeek；预算不足或模型异常时转为零成本检索式回答。
+  </div>
+  <div class="workflow-step">
+    <strong>6. 观测与自愈</strong>
+    AgentRun / AgentStep 记录状态、耗时、工具名、费用和低成本自愈动作。
+  </div>
+</section>
+
+<section class="split">
+  <article class="item">
+    <h2>面试展示重点</h2>
+    <p class="summary">这个项目主打 Agent 工程能力，而不是单次 API 调用。</p>
+    <div class="tags">
+      <span class="tag">工作流编排</span>
+      <span class="tag">引用溯源</span>
+      <span class="tag">预算熔断</span>
+      <span class="tag">可观测性</span>
+      <span class="tag">上线部署</span>
+    </div>
+    <p class="callout">
+      推荐演示路径：先看本页数据规模和工作流，再进入问答页提问，最后回到最近运行记录查看 RAG 步骤、token 和费用。
+    </p>
+  </article>
+
+  <article class="item">
+    <h2>成本控制</h2>
+    <p>日预算：{{ daily_budget_cny }} 元</p>
+    <p>月预算：{{ monthly_budget_cny }} 元</p>
+    <p>今日花费：{{ usage_today.cost|default:"0" }} 元</p>
+    <p>今日调用：{{ usage_today.requests|default:"0" }} 次</p>
+    <p>历史 DeepSeek 花费：{{ usage_total.cost|default:"0" }} 元</p>
+    <p class="usage-line">预算不足、Key 缺失或供应商异常时，系统保留引用检索结果并停止付费模型调用。</p>
+  </article>
+</section>
+
+<section class="grid">
+  <div>
+    <article class="item">
+      <h2>自动评测</h2>
+      {% if latest_eval %}
+        <p class="summary">
+          最近一次评测：{{ latest_eval.started_at }} ·
+          检索命中率 {{ latest_eval_metrics.retrieval_hit_rate }} ·
+          期望关键词命中率 {{ latest_eval_metrics.expected_keyword_hit_rate }} ·
+          付费 LLM 调用 {{ latest_eval_metrics.paid_llm_calls }}
+        </p>
+        <p class="usage-line">评测只跑检索与引用覆盖，不消耗付费模型预算。</p>
+      {% else %}
+        <p class="summary">尚未记录评测。运行 <code>python manage.py agent_eval --json</code> 后会在这里展示检索命中率、引用覆盖和成本。</p>
+      {% endif %}
+    </article>
+
+    <h2>最近 Agent 运行</h2>
+    <div class="timeline">
+      {% for run in latest_runs %}
+        <div class="timeline-item">
+          <strong>{{ run.get_kind_display }} · {{ run.get_status_display }}</strong>
+          <div class="usage-line">{{ run.started_at }}{% if run.finished_at %} · {{ run.finished_at }}{% endif %} · {{ run.total_cost_cny }} 元</div>
+          {% if run.metrics_json %}<div class="usage-line">metrics: {{ run.metrics_json }}</div>{% endif %}
+          {% if run.error_message %}<p>{{ run.error_message }}</p>{% endif %}
+        </div>
+      {% empty %}
+        <div class="timeline-item">暂无 Agent 运行记录。</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <aside class="panel">
+    <h2>工作流分布</h2>
+    {% for row in runs_by_kind %}
+      <p>{{ row.kind }}：{{ row.count }}</p>
+    {% empty %}
+      <p>暂无数据</p>
+    {% endfor %}
+
+    <h2>最近 LLM 用量</h2>
+    {% for event in latest_usage %}
+      <p>{{ event.model }} · {{ event.cost_cny }} 元 · {{ event.get_status_display }}</p>
+    {% empty %}
+      <p>暂无用量事件</p>
+    {% endfor %}
+
+    <h2>工具接口</h2>
+    <p>本地 MCP server 暴露公开内容检索、站点健康检查和自愈 dry-run 工具。</p>
+    <p class="usage-line">写操作保持 dry-run 或后台登录边界，公开页面不暴露管理入口。</p>
+
+    <h2>低成本自愈</h2>
+    {% if latest_self_heal %}
+      <p>{{ latest_self_heal.get_status_display }} · {{ latest_self_heal.started_at }}</p>
+    {% else %}
+      <p>尚无自愈运行记录。</p>
+    {% endif %}
+  </aside>
+</section>
+{% endblock %}

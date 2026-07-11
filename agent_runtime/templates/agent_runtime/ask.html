@@ -1,0 +1,194 @@
+{% extends "aggregator/base.html" %}
+{% block title %}RAG 问答 · 中北信息聚合{% endblock %}
+{% block content %}
+<form class="ask-form" id="ask-form">
+  <input id="question" name="q" type="search" placeholder="问一个关于已发布校园信息的问题" autocomplete="off" aria-label="问题">
+  <button type="submit">提问</button>
+</form>
+<div class="example-questions" aria-label="示例问题">
+  <button type="button" data-question="最近有哪些就业招聘信息？">就业招聘</button>
+  <button type="button" data-question="研究生招生相关通知有哪些？">研究生招生</button>
+  <button type="button" data-question="有哪些学术科研活动？">学术科研</button>
+</div>
+<div class="chat-shell">
+  <section class="chat-log" id="chat-log">
+    {% if history_messages %}
+      {% for message in history_messages %}
+        <div class="chat-message" id="message-{{ message.id }}">
+          <div class="chat-role">{{ message.get_role_display }}</div>
+          <div>{{ message.content|linebreaksbr }}</div>
+          {% if message.role == "assistant" %}
+            <div class="usage-line">
+              {{ message.model|default:"rules" }} · 输入 {{ message.input_tokens }} · 输出 {{ message.output_tokens }} · {{ message.cost_cny }} 元
+            </div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    {% else %}
+    <div class="chat-message">
+      <div class="chat-role">助手</div>
+      基于本站已发布公开信息回答，回答会附带来源，并实时显示本轮 token 和费用。当前 DeepSeek 日预算：{{ daily_budget_cny }} 元。
+    </div>
+    {% endif %}
+  </section>
+  <aside class="panel">
+    <h2>历史问题</h2>
+    <div class="citation-list" id="history-list">
+      {% for message in history_questions %}
+        <a class="citation" href="#message-{{ message.id }}">{{ message.content|truncatechars:60 }}</a>
+      {% empty %}
+        <div class="usage-line" id="history-empty">当前会话暂无历史问题。</div>
+      {% endfor %}
+    </div>
+    <p><a href="{% url 'agent_runtime:ask' %}?new=1">新对话</a></p>
+    <h2>本轮用量</h2>
+    <p>输入 token：<strong id="round-input">0</strong></p>
+    <p>输出 token：<strong id="round-output">0</strong></p>
+    <p>费用：<strong id="round-cost">0</strong> 元</p>
+    <h2>本对话累计</h2>
+    <p>输入 token：<strong id="session-input">{% if current_session %}{{ current_session.total_input_tokens }}{% else %}0{% endif %}</strong></p>
+    <p>输出 token：<strong id="session-output">{% if current_session %}{{ current_session.total_output_tokens }}{% else %}0{% endif %}</strong></p>
+    <p>费用：<strong id="session-cost">{% if current_session %}{{ current_session.total_cost_cny }}{% else %}0{% endif %}</strong> 元</p>
+    <h2>引用来源</h2>
+    <div class="citation-list" id="citations"></div>
+  </aside>
+</div>
+<script>
+  const sessionKey = "{{ session_key|escapejs }}";
+  const form = document.getElementById("ask-form");
+  const question = document.getElementById("question");
+  const log = document.getElementById("chat-log");
+  const citations = document.getElementById("citations");
+  const historyList = document.getElementById("history-list");
+  const exampleQuestions = document.querySelectorAll("[data-question]");
+
+  function appendMessage(role, text, id) {
+    const node = document.createElement("div");
+    node.className = "chat-message";
+    if (id) node.id = id;
+    const roleNode = document.createElement("div");
+    roleNode.className = "chat-role";
+    roleNode.textContent = role;
+    const textNode = document.createElement("div");
+    textNode.textContent = text;
+    node.appendChild(roleNode);
+    node.appendChild(textNode);
+    log.appendChild(node);
+    log.scrollTop = log.scrollHeight;
+    return textNode;
+  }
+
+  function appendHistoryQuestion(text, targetId) {
+    const empty = document.getElementById("history-empty");
+    if (empty) empty.remove();
+    const link = document.createElement("a");
+    link.className = "citation";
+    link.href = targetId ? `#${targetId}` : "#";
+    link.textContent = text.length > 60 ? `${text.slice(0, 57)}...` : text;
+    historyList.prepend(link);
+  }
+
+  function setText(id, value) {
+    document.getElementById(id).textContent = value;
+  }
+
+  function appendCitation(payload) {
+    const item = document.createElement("div");
+    item.className = "citation";
+
+    const detailLink = document.createElement("a");
+    detailLink.href = payload.detail_url || "#";
+    detailLink.textContent = payload.title || "未命名来源";
+
+    const source = document.createElement("div");
+    source.className = "usage-line";
+    source.textContent = payload.source || "未知来源";
+
+    const originalLink = document.createElement("a");
+    originalLink.href = payload.url || "#";
+    originalLink.target = "_blank";
+    originalLink.rel = "noopener noreferrer";
+    originalLink.textContent = "原文";
+
+    item.appendChild(detailLink);
+    item.appendChild(source);
+    item.appendChild(originalLink);
+    citations.appendChild(item);
+  }
+
+  function showStreamError(answerNode, message) {
+    const text = message || "问答生成中断，请稍后重试或换个问法。";
+    answerNode.textContent = answerNode.textContent || text;
+    setText("round-output", "中断");
+    setText("round-cost", "未结算");
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const q = question.value.trim();
+    if (!q) return;
+    const userMessageId = `message-live-${Date.now()}`;
+    appendMessage("用户", q, userMessageId);
+    appendHistoryQuestion(q, userMessageId);
+    const answerNode = appendMessage("助手", "");
+    citations.innerHTML = "";
+    setText("round-input", "估算中");
+    setText("round-output", "估算中");
+    setText("round-cost", "估算中");
+    question.value = "";
+
+    const url = `{% url 'agent_runtime:ask_stream' %}?session=${encodeURIComponent(sessionKey)}&q=${encodeURIComponent(q)}`;
+    try {
+      const response = await fetch(url, {headers: {"Accept": "text/event-stream"}});
+      if (!response.ok || !response.body) {
+        showStreamError(answerNode, "问答服务暂时不可用，请稍后重试。");
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, {stream: true});
+        const events = buffer.split("\n\n");
+        buffer = events.pop();
+        for (const raw of events) {
+          const line = raw.split("\n").find((part) => part.startsWith("data: "));
+          if (!line) continue;
+          const payload = JSON.parse(line.slice(6));
+          if (payload.type === "delta") {
+            answerNode.textContent += payload.text;
+          } else if (payload.type === "citation") {
+            appendCitation(payload);
+          } else if (payload.type === "usage_estimate") {
+            setText("round-input", payload.input_tokens);
+            setText("round-output", `${payload.output_tokens} 以内`);
+            setText("round-cost", `${payload.cost_cny} 以内`);
+          } else if (payload.type === "usage_final") {
+            setText("round-input", payload.input_tokens);
+            setText("round-output", payload.output_tokens);
+            setText("round-cost", payload.cost_cny);
+            setText("session-input", payload.session_input_tokens);
+            setText("session-output", payload.session_output_tokens);
+            setText("session-cost", payload.session_cost_cny);
+          } else if (payload.type === "error") {
+            showStreamError(answerNode, payload.message);
+          } else if (payload.type === "done") {
+            return;
+          }
+        }
+      }
+    } catch (error) {
+      showStreamError(answerNode, "网络连接中断，请稍后重试。");
+    }
+  });
+  exampleQuestions.forEach((button) => {
+    button.addEventListener("click", () => {
+      question.value = button.dataset.question || "";
+      question.focus();
+    });
+  });
+  log.scrollTop = log.scrollHeight;
+</script>
+{% endblock %}

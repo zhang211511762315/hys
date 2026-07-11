@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django_celery_beat",
     "aggregator",
+    "agent_runtime",
 ]
 
 MIDDLEWARE = [
@@ -122,7 +123,8 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "rules")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
-DEEPSEEK_DAILY_BUDGET_CNY = os.getenv("DEEPSEEK_DAILY_BUDGET_CNY", "0.5")
+DEEPSEEK_DAILY_BUDGET_CNY = os.getenv("DEEPSEEK_DAILY_BUDGET_CNY", "0.1")
+DEEPSEEK_MONTHLY_BUDGET_CNY = os.getenv("DEEPSEEK_MONTHLY_BUDGET_CNY", "3")
 DEEPSEEK_USD_TO_CNY = os.getenv("DEEPSEEK_USD_TO_CNY", "7.3")
 DEEPSEEK_MAX_OUTPUT_TOKENS = int(os.getenv("DEEPSEEK_MAX_OUTPUT_TOKENS", "500"))
 DEEPSEEK_INPUT_CACHE_HIT_USD_PER_MILLION = os.getenv("DEEPSEEK_INPUT_CACHE_HIT_USD_PER_MILLION", "0.0028")
@@ -140,6 +142,20 @@ OCR_ENABLE_FOR_WEB = os.getenv("OCR_ENABLE_FOR_WEB", "0") == "1"
 MEILISEARCH_URL = os.getenv("MEILISEARCH_URL", "")
 MEILISEARCH_MASTER_KEY = os.getenv("MEILISEARCH_MASTER_KEY", "")
 MEILISEARCH_INDEX = os.getenv("MEILISEARCH_INDEX", "content_items")
+MEILISEARCH_RAG_INDEX = os.getenv("MEILISEARCH_RAG_INDEX", "content_chunks")
+
+RAG_MAX_CONTEXT_CHUNKS = int(os.getenv("RAG_MAX_CONTEXT_CHUNKS", "5"))
+RAG_CHUNK_CHARS = int(os.getenv("RAG_CHUNK_CHARS", "900"))
+RAG_CHUNK_OVERLAP_CHARS = int(os.getenv("RAG_CHUNK_OVERLAP_CHARS", "120"))
+RAG_ANONYMOUS_DAILY_LIMIT = int(os.getenv("RAG_ANONYMOUS_DAILY_LIMIT", "5"))
+RAG_MAX_OUTPUT_TOKENS = int(os.getenv("RAG_MAX_OUTPUT_TOKENS", "500"))
+
+SELF_HEAL_ENABLED = os.getenv("SELF_HEAL_ENABLED", "1") == "1"
+SELF_HEAL_DAILY_ACTION_LIMIT = int(os.getenv("SELF_HEAL_DAILY_ACTION_LIMIT", "20"))
+SELF_HEAL_STALE_JOB_MINUTES = int(os.getenv("SELF_HEAL_STALE_JOB_MINUTES", "120"))
+
+MCP_ADMIN_TOKEN = os.getenv("MCP_ADMIN_TOKEN", "")
+MCP_BIND_HOST = os.getenv("MCP_BIND_HOST", "127.0.0.1")
 
 PUBLIC_SITE_BASE_URL = os.getenv("PUBLIC_SITE_BASE_URL", "http://127.0.0.1:8000")
 CRAWL_USER_AGENT = os.getenv("CRAWL_USER_AGENT", "ZhongbeiInfoBot/0.1 (+https://example.local)")

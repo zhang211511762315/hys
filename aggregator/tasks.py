@@ -14,6 +14,25 @@ from .services.pipeline import ingest_source
 @shared_task
 def crawl_source(source_id: int):
     source = Source.objects.get(id=source_id)
+    agent_run = None
+    ingest_step = None
+    try:
+        from agent_runtime.models import AgentRun, AgentStep
+
+        agent_run = AgentRun.objects.create(
+            kind=AgentRun.Kind.CRAWL,
+            trigger=f"source:{source_id}",
+            metrics_json={"source": source.name},
+        )
+        ingest_step = AgentStep.objects.create(
+            run=agent_run,
+            name="crawl_ingest_source",
+            tool_name="aggregator.ingest_source",
+            input_summary=source.url,
+        )
+    except Exception:
+        agent_run = None
+        ingest_step = None
     job = (
         CrawlJob.objects.filter(source=source, status=CrawlJob.Status.QUEUED)
         .order_by("created_at")
@@ -25,9 +44,17 @@ def crawl_source(source_id: int):
             job.error_message = "Skipped because source is disabled."
             job.finished_at = timezone.now()
             job.save(update_fields=["status", "error_message", "finished_at", "updated_at"])
+        if ingest_step is not None:
+            ingest_step.finish("skipped", output_summary="source disabled")
+        if agent_run is not None:
+            agent_run.finish("succeeded", metrics={"skipped": "source disabled"})
         return 0
     if job is None:
         if CrawlJob.objects.filter(source=source, status=CrawlJob.Status.RUNNING).exists():
+            if ingest_step is not None:
+                ingest_step.finish("skipped", output_summary="another job running")
+            if agent_run is not None:
+                agent_run.finish("succeeded", metrics={"skipped": "another job running"})
             return 0
         job = CrawlJob.objects.create(source=source, target_url=source.url)
     elif CrawlJob.objects.filter(source=source, status=CrawlJob.Status.RUNNING).exclude(id=job.id).exists():
@@ -35,6 +62,10 @@ def crawl_source(source_id: int):
         job.error_message = "Skipped because another crawl job is already running for this source."
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "error_message", "finished_at", "updated_at"])
+        if ingest_step is not None:
+            ingest_step.finish("skipped", output_summary="another job running")
+        if agent_run is not None:
+            agent_run.finish("succeeded", metrics={"skipped": "another job running"})
         return 0
     job.status = CrawlJob.Status.RUNNING
     job.started_at = timezone.now()
@@ -42,6 +73,10 @@ def crawl_source(source_id: int):
     try:
         item_count = ingest_source(source, job)
     except Exception as exc:
+        if ingest_step is not None:
+            ingest_step.finish("failed", error_message=str(exc))
+        if agent_run is not None:
+            agent_run.finish("failed", error_message=str(exc))
         job.status = CrawlJob.Status.FAILED
         job.error_message = str(exc)
         now = timezone.now()
@@ -60,6 +95,8 @@ def crawl_source(source_id: int):
         )
         raise
     else:
+        if ingest_step is not None:
+            ingest_step.finish("succeeded", output_summary=f"{item_count} item(s)")
         job.status = CrawlJob.Status.SUCCEEDED
         if item_count == 0 and not job.warning_message:
             job.warning_message = "No articles were discovered or ingested."
@@ -80,6 +117,8 @@ def crawl_source(source_id: int):
     finally:
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "error_message", "warning_message", "finished_at", "updated_at"])
+        if agent_run is not None and agent_run.status == "running":
+            agent_run.finish("succeeded", metrics={"item_count": item_count, "job_id": job.id})
     return item_count
 
 
