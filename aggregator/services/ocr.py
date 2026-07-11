@@ -5,6 +5,8 @@ import httpx
 from django.conf import settings
 from PIL import Image
 
+from .urls import ensure_public_http_url
+
 
 @dataclass(frozen=True)
 class OCRResult:
@@ -15,8 +17,12 @@ class OCRResult:
 def ocr_image_url(url: str) -> OCRResult:
     if settings.OCR_PROVIDER != "tesseract":
         return OCRResult(text="", provider=settings.OCR_PROVIDER)
+    if getattr(settings, "CRAWL_BLOCK_PRIVATE_NETWORKS", True):
+        ensure_public_http_url(url)
     response = httpx.get(url, timeout=httpx.Timeout(settings.FETCH_TIMEOUT_SECONDS, connect=5.0))
     response.raise_for_status()
+    if getattr(settings, "CRAWL_BLOCK_PRIVATE_NETWORKS", True):
+        ensure_public_http_url(str(response.url or url))
     image = Image.open(BytesIO(response.content))
     try:
         import pytesseract

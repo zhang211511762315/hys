@@ -7,6 +7,8 @@ from urllib.parse import urlsplit
 import httpx
 from django.conf import settings
 
+from .urls import UnsafeURLError, ensure_public_http_url
+
 
 @dataclass(frozen=True)
 class FetchResult:
@@ -23,6 +25,7 @@ class FetchError(RuntimeError):
 
 
 def fetch_url(url: str) -> FetchResult:
+    _ensure_safe_url(url)
     if getattr(settings, "CRAWL_DIRECT_FIRST", True):
         try:
             return _fetch_direct(url)
@@ -51,6 +54,8 @@ def _fetch_direct(url: str) -> FetchResult:
 
 
 def _fetch_direct_once(url: str) -> FetchResult:
+    if getattr(settings, "CRAWL_BLOCK_PRIVATE_NETWORKS", True):
+        return _fetch_public_redirect_chain(url)
     context = _force_ipv4_for_url(url) if _should_force_ipv4(url) else nullcontext()
     with context:
         response = httpx.get(
@@ -68,6 +73,44 @@ def _fetch_direct_once(url: str) -> FetchResult:
         headers=dict(response.headers),
         via="direct",
     )
+
+
+def _fetch_public_redirect_chain(url: str) -> FetchResult:
+    current_url = url
+    for _redirect in range(6):
+        _ensure_safe_url(current_url)
+        context = _force_ipv4_for_url(current_url) if _should_force_ipv4(current_url) else nullcontext()
+        with context:
+            response = httpx.get(
+                current_url,
+                headers={"User-Agent": settings.CRAWL_USER_AGENT},
+                follow_redirects=False,
+                timeout=httpx.Timeout(settings.FETCH_TIMEOUT_SECONDS, connect=settings.FETCH_CONNECT_TIMEOUT_SECONDS),
+            )
+        if response.status_code in {301, 302, 303, 307, 308} and response.headers.get("location"):
+            current_url = urljoin(current_url, response.headers["location"])
+            continue
+        response.raise_for_status()
+        final_url = str(response.url or current_url)
+        _ensure_safe_url(final_url)
+        return FetchResult(
+            url=url,
+            final_url=final_url,
+            text=response.text,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            via="direct",
+        )
+    raise FetchError(f"too many redirects for {url}")
+
+
+def _ensure_safe_url(url: str) -> None:
+    if not getattr(settings, "CRAWL_BLOCK_PRIVATE_NETWORKS", True):
+        return
+    try:
+        ensure_public_http_url(url)
+    except UnsafeURLError as exc:
+        raise FetchError(str(exc)) from exc
 
 
 def _should_retry_direct(exc: Exception) -> bool:
@@ -123,6 +166,7 @@ def _fetch_relay(url: str, original_exc: Exception | None) -> FetchResult:
         raise FetchError(f"relay returned HTTP {status_code} for {url}")
     body = payload.get("body") or payload.get("text") or ""
     final_url = payload.get("final_url") or payload.get("url") or url
+    _ensure_safe_url(urljoin(url, final_url))
     if not body:
         raise FetchError(f"relay returned empty body for {url}")
     if original_exc is not None:

@@ -10,6 +10,8 @@ from django.utils import timezone
 from agent_runtime.models import AgentEvent, AgentRun, ToolInvocation
 
 from .schemas import ResearchPlan
+from .generation import generate_research_answer
+from .schemas import ContentEvidence
 from .tools import build_default_registry
 from .workflow import build_research_graph
 
@@ -67,7 +69,15 @@ def execute_research_run(run_id: int) -> dict[str, Any]:
         run.status = AgentRun.Status.PLANNING
         run.current_node = "plan"
         run.save(update_fields=["status", "current_node", "updated_at"])
-        result = build_research_graph(registry).invoke(
+        def answer_builder(_state, items, _outputs):
+            evidence = [ContentEvidence.model_validate(item) for item in items]
+            return generate_research_answer(
+                run.goal,
+                evidence,
+                on_delta=lambda text: append_event(run, "answer.delta", {"text": text}),
+            )
+
+        result = build_research_graph(registry, answer_builder=answer_builder).invoke(
             {"goal": run.goal, "actor_is_staff": False}
         )
         plan = ResearchPlan.model_validate(result["plan"])
@@ -108,6 +118,7 @@ def execute_research_run(run_id: int) -> dict[str, Any]:
             "tool_calls": len(plan.steps),
             "citations": len(result.get("answer", {}).get("citations", [])),
             "verified": bool(verification["passed"]),
+            "replans": int(result.get("replan_count", 0)),
         }
         run.save(
             update_fields=[

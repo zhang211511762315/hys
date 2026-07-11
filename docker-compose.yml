@@ -38,7 +38,14 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     logging: *default-logging
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   meilisearch:
     image: getmeili/meilisearch:v1.14
@@ -54,12 +61,12 @@ services:
     build: .
     restart: unless-stopped
     logging: *default-logging
-    env_file: .env
+    env_file: ${APP_ENV_FILE:-.env}
     depends_on:
       mysql:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       meilisearch:
         condition: service_started
     command: >
@@ -68,25 +75,51 @@ services:
              gunicorn zhongbei_info.asgi:application --bind 0.0.0.0:8000 --workers 1 -k uvicorn_worker.UvicornWorker --timeout 60 --max-requests 500 --max-requests-jitter 50"
     volumes:
       - static_data:/app/staticfiles
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   worker:
     build: .
     restart: unless-stopped
     logging: *default-logging
-    env_file: .env
+    env_file: ${APP_ENV_FILE:-.env}
     depends_on:
-      web:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
         condition: service_started
     command: ["celery", "-A", "zhongbei_info", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=100", "--max-memory-per-child=200000"]
+
+  agent_worker:
+    build: .
+    restart: unless-stopped
+    logging: *default-logging
+    env_file: ${APP_ENV_FILE:-.env}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+    command: ["celery", "-A", "zhongbei_info", "worker", "--loglevel=INFO", "--concurrency=1", "--queues=agent", "--hostname=agent@%h", "--max-tasks-per-child=100", "--max-memory-per-child=200000"]
 
   scheduler:
     build: .
     restart: unless-stopped
     logging: *default-logging
-    env_file: .env
+    env_file: ${APP_ENV_FILE:-.env}
     depends_on:
-      web:
-        condition: service_started
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     command: ["celery", "-A", "zhongbei_info", "beat", "--loglevel=INFO", "--scheduler=django_celery_beat.schedulers:DatabaseScheduler"]
 
   nginx:
@@ -104,5 +137,6 @@ services:
 
 volumes:
   mysql_data:
+  redis_data:
   meili_data:
   static_data:

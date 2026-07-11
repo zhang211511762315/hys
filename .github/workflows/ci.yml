@@ -28,6 +28,4 @@ jobs:
       - name: Run zero-cost Agent evaluation
         run: python manage.py research_agent_eval --json --settings=zhongbei_info.settings_test
       - name: Validate Compose
-        run: |
-          cp .env.example .env
-          docker compose config --quiet
+        run: APP_ENV_FILE=.env.example docker compose config --quiet

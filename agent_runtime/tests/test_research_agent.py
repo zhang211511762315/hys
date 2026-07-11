@@ -19,6 +19,69 @@ def test_template_planner_builds_bounded_deadline_research_plan():
     assert plan.steps[2].input_from == {"items": "details.items"}
 
 
+def test_hybrid_planner_accepts_valid_model_plan_for_complex_goal():
+    from agent_runtime.research.planner import build_hybrid_plan
+
+    def model_planner(_goal):
+        return {
+            "goal": "综合比较就业与科研机会，并按适合本科生的程度说明理由",
+            "task_type": "comparison",
+            "steps": [
+                {
+                    "id": "search",
+                    "tool": "search_public_content",
+                    "description": "检索公开信息",
+                    "args": {"query": "就业 科研 本科生", "limit": 8},
+                },
+                {
+                    "id": "details",
+                    "tool": "get_content_details",
+                    "description": "读取详情",
+                    "input_from": {"item_ids": "search.item_ids"},
+                },
+                {
+                    "id": "comparison",
+                    "tool": "compare_evidence",
+                    "description": "比较证据",
+                    "input_from": {"items": "details.items"},
+                },
+            ],
+        }
+
+    plan = build_hybrid_plan(
+        "综合比较就业与科研机会，并按适合本科生的程度说明理由",
+        model_planner=model_planner,
+    )
+
+    assert plan.task_type == "comparison"
+    assert plan.steps[-1].tool == "compare_evidence"
+
+
+def test_hybrid_planner_rejects_admin_tool_and_falls_back():
+    from agent_runtime.research.planner import build_hybrid_plan
+
+    def unsafe_planner(goal):
+        return {
+            "goal": goal,
+            "task_type": "search",
+            "steps": [
+                {
+                    "id": "repair",
+                    "tool": "retry_source",
+                    "description": "越权修复来源",
+                    "args": {"source_id": 1},
+                }
+            ],
+        }
+
+    plan = build_hybrid_plan(
+        "综合整理学校信息并判断哪些内容值得本科生关注",
+        model_planner=unsafe_planner,
+    )
+
+    assert [step.tool for step in plan.steps] == ["search_public_content", "get_content_details"]
+
+
 def test_public_actor_cannot_execute_admin_write_tool():
     from pydantic import BaseModel
 
@@ -111,3 +174,34 @@ def test_research_graph_safely_terminates_when_no_evidence(settings):
     assert result["verification"] == {"passed": True, "reasons": []}
     assert result["answer"]["insufficient_evidence"] is True
     assert result["answer"]["citations"] == []
+
+
+@pytest.mark.django_db
+def test_research_graph_replans_once_after_verification_failure(research_item, settings):
+    settings.MEILISEARCH_URL = ""
+    from agent_runtime.research.workflow import build_research_graph
+
+    def answer_builder(state, items, _outputs):
+        item = items[0]
+        citation_id = 999999 if state.get("replan_count", 0) == 0 else item["item_id"]
+        return {
+            "answer": "带验证的研究结论",
+            "citations": [
+                {
+                    "item_id": citation_id,
+                    "title": item["title"],
+                    "source": item["source"],
+                    "url": item["url"],
+                }
+            ],
+            "insufficient_evidence": False,
+        }
+
+    result = build_research_graph(answer_builder=answer_builder).invoke(
+        {"goal": "查询就业实习信息", "actor_is_staff": False}
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["replan_count"] == 1
+    assert result["verification"]["passed"] is True
+    assert result["answer"]["citations"][0]["item_id"] == research_item.id

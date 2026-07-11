@@ -93,10 +93,13 @@ def test_research_run_api_enqueues_once_for_same_client_request(monkeypatch):
 
 @pytest.mark.django_db
 def test_research_event_stream_includes_stable_sse_ids():
+    from agent_runtime.models import AgentRun
     from agent_runtime.research.runtime import append_event, create_research_run
 
     run, _ = create_research_run("查询校园通知", "request-events")
     append_event(run, "plan.created", {"step_count": 2})
+    run.status = AgentRun.Status.SUCCEEDED
+    run.save(update_fields=["status", "updated_at"])
     client = Client()
 
     response = client.get(f"/api/v1/research-runs/{run.public_id}/events")
@@ -106,6 +109,25 @@ def test_research_event_stream_includes_stable_sse_ids():
     assert "id: 1\nevent: run.created" in body
     assert "id: 2\nevent: plan.created" in body
     assert 'data: {"step_count": 2}' in body
+
+
+@pytest.mark.django_db(transaction=True)
+def test_research_event_stream_observes_events_created_after_connection():
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import append_event, create_research_run
+
+    run, _ = create_research_run("查询实时事件", "request-live-events")
+    response = Client().get(f"/api/v1/research-runs/{run.public_id}/events")
+    iterator = iter(response.streaming_content)
+
+    first = next(iterator).decode()
+    append_event(run, "answer.delta", {"text": "第一段"})
+    run.status = AgentRun.Status.SUCCEEDED
+    run.save(update_fields=["status", "updated_at"])
+    second = next(iterator).decode()
+
+    assert "event: run.created" in first
+    assert "event: answer.delta" in second
 
 
 @pytest.mark.django_db
@@ -160,3 +182,38 @@ def test_session_memory_is_used_only_when_secure_mode_enabled(settings):
     resolved = resolve_goal_with_memory("这些活动的截止时间", session)
     assert "帮我找近期就业活动" in resolved
     assert resolved.endswith("当前目标：这些活动的截止时间")
+
+
+@pytest.mark.django_db
+def test_research_page_uses_post_api_and_event_stream():
+    response = Client().get("/research/")
+    html = response.content.decode()
+
+    assert response.status_code == 200
+    assert 'fetch("/api/v1/research-runs"' in html
+    assert 'method: "POST"' in html
+    assert "new EventSource(payload.events_url)" in html
+    assert "?q=" not in html
+
+
+@pytest.mark.django_db
+def test_agent_dashboard_displays_research_latency_percentiles():
+    from agent_runtime.models import ToolInvocation
+    from agent_runtime.research.runtime import create_research_run
+
+    run, _ = create_research_run("延迟统计", "latency-dashboard")
+    for index, duration in enumerate([10, 20, 100], start=1):
+        ToolInvocation.objects.create(
+            run=run,
+            step_id=f"step-{index}",
+            tool_name="search_public_content",
+            status=ToolInvocation.Status.SUCCEEDED,
+            duration_ms=duration,
+        )
+
+    html = Client().get("/agent/").content.decode()
+
+    assert "工具延迟 P50" in html
+    assert ">20 ms<" in html
+    assert "工具延迟 P95" in html
+    assert ">100 ms<" in html

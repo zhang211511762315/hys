@@ -1,5 +1,7 @@
 import asyncio
 import json
+import math
+import time
 
 from django.conf import settings
 from django.core.cache import cache
@@ -11,7 +13,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from aggregator.models import AIUsageDaily, ContentItem, CrawlFailure, Source
 
-from .models import AgentRun, ContentChunk, LLMUsageEvent, RagMessage, RagSession
+from .models import AgentRun, ContentChunk, LLMUsageEvent, RagMessage, RagSession, ToolInvocation
 from .research.runtime import cancel_research_run, create_research_run
 from .research.schemas import CreateResearchRunInput
 from .services import answer_question_events, new_session_key, sse_event
@@ -55,6 +57,11 @@ def ask(request):
         samesite="Lax",
     )
     return response
+
+
+@require_GET
+def research(request):
+    return render(request, "agent_runtime/research.html")
 
 
 @require_GET
@@ -110,6 +117,11 @@ def agent_dashboard(request):
     latest_usage = LLMUsageEvent.objects.order_by("-created_at")[:10]
     latest_eval = AgentRun.objects.filter(kind=AgentRun.Kind.EVAL).order_by("-created_at").first()
     latest_self_heal = AgentRun.objects.filter(kind=AgentRun.Kind.SELF_HEAL).order_by("-created_at").first()
+    tool_durations = list(
+        ToolInvocation.objects.filter(status=ToolInvocation.Status.SUCCEEDED, duration_ms__gt=0)
+        .order_by("duration_ms")
+        .values_list("duration_ms", flat=True)[:5000]
+    )
     open_failure_count = CrawlFailure.objects.filter(resolved_at__isnull=True).count()
     latest_eval_metrics = _display_eval_metrics(latest_eval.metrics_json if latest_eval else {})
     return render(
@@ -131,6 +143,8 @@ def agent_dashboard(request):
             "latest_self_heal": latest_self_heal,
             "daily_budget_cny": settings.DEEPSEEK_DAILY_BUDGET_CNY,
             "monthly_budget_cny": settings.DEEPSEEK_MONTHLY_BUDGET_CNY,
+            "tool_latency_p50_ms": _percentile(tool_durations, 0.50),
+            "tool_latency_p95_ms": _percentile(tool_durations, 0.95),
         },
     )
 
@@ -220,9 +234,22 @@ def research_run_events(request, run_id):
     except ValueError:
         after = 0
 
+    snapshot_only = request.GET.get("snapshot") == "1"
+
     def stream():
-        for event in run.events.filter(sequence__gt=after).order_by("sequence"):
-            yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(event.payload_json, ensure_ascii=False)}\n\n"
+        last_sequence = after
+        deadline = time.monotonic() + 105
+        terminal = {AgentRun.Status.SUCCEEDED, AgentRun.Status.FAILED, AgentRun.Status.CANCELLED}
+        while True:
+            events = list(run.events.filter(sequence__gt=last_sequence).order_by("sequence")[:100])
+            for event in events:
+                last_sequence = event.sequence
+                yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(event.payload_json, ensure_ascii=False)}\n\n"
+            current_status = AgentRun.objects.filter(id=run.id).values_list("status", flat=True).first()
+            if snapshot_only or (current_status in terminal and not events) or time.monotonic() >= deadline:
+                break
+            if not events:
+                time.sleep(0.25)
 
     response = StreamingHttpResponse(stream(), content_type="text/event-stream; charset=utf-8")
     response["Cache-Control"] = "no-cache"
@@ -266,3 +293,10 @@ def _display_eval_metrics(metrics: dict) -> dict:
         "expected_keyword_hit_rate": percent("expected_keyword_hit_rate"),
         "paid_llm_calls": metrics.get("paid_llm_calls", 0),
     }
+
+
+def _percentile(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    index = max(0, min(len(values) - 1, math.ceil(len(values) * percentile) - 1))
+    return int(values[index])

@@ -25,6 +25,8 @@
   <div class="metric">公开内容<strong>{{ published_count }}</strong></div>
   <div class="metric">RAG 知识块<strong>{{ chunk_count }}</strong></div>
   <div class="metric">待重试 URL<strong>{{ retry_queue_count }}</strong></div>
+  <div class="metric">工具延迟 P50<strong>{{ tool_latency_p50_ms }} ms</strong></div>
+  <div class="metric">工具延迟 P95<strong>{{ tool_latency_p95_ms }} ms</strong></div>
 </section>
 
 <section class="workflow" aria-label="Agent 工作流">

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from .planner import build_template_plan
+from .planner import build_hybrid_plan
 from .schemas import ResearchAnswer, ResearchPlan, VerificationResult
 from .tools import ToolContext, ToolRegistry, build_default_registry
 
@@ -17,6 +17,7 @@ class ResearchGraphState(TypedDict, total=False):
     executed_tools: list[str]
     answer: dict[str, Any]
     verification: dict[str, Any]
+    replan_count: int
     status: str
 
 
@@ -28,11 +29,14 @@ def _resolve_path(outputs: dict[str, dict[str, Any]], path: str) -> Any:
     return value
 
 
-def build_research_graph(registry: ToolRegistry | None = None):
+def build_research_graph(
+    registry: ToolRegistry | None = None,
+    answer_builder: Callable[[ResearchGraphState, list[dict], dict[str, dict[str, Any]]], dict] | None = None,
+):
     registry = registry or build_default_registry()
 
     def plan_node(state: ResearchGraphState) -> ResearchGraphState:
-        plan = build_template_plan(state["goal"])
+        plan = build_hybrid_plan(state["goal"])
         return {**state, "plan": plan.model_dump(mode="json"), "status": "planning"}
 
     def execute_node(state: ResearchGraphState) -> ResearchGraphState:
@@ -57,6 +61,9 @@ def build_research_graph(registry: ToolRegistry | None = None):
         outputs = state.get("tool_outputs", {})
         details = outputs.get("details", {})
         items = details.get("items") or outputs.get("search", {}).get("items", [])
+        if answer_builder is not None and items:
+            answer = ResearchAnswer.model_validate(answer_builder(state, items, outputs))
+            return {**state, "answer": answer.model_dump(mode="json")}
         if not items:
             answer = ResearchAnswer(
                 answer="没有在已发布的公开校园信息中找到足够证据，暂时无法完成该任务。",
@@ -106,6 +113,20 @@ def build_research_graph(registry: ToolRegistry | None = None):
         verification = VerificationResult(passed=not reasons, reasons=reasons)
         return {**state, "verification": verification.model_dump(mode="json")}
 
+    def replan_node(state: ResearchGraphState) -> ResearchGraphState:
+        return {
+            **state,
+            "replan_count": int(state.get("replan_count", 0)) + 1,
+            "status": "planning",
+        }
+
+    def route_after_verification(state: ResearchGraphState) -> str:
+        if state["verification"]["passed"]:
+            return "finalize"
+        if int(state.get("replan_count", 0)) < 1:
+            return "replan"
+        return "finalize"
+
     def finalize_node(state: ResearchGraphState) -> ResearchGraphState:
         status = "succeeded" if state["verification"]["passed"] else "failed"
         return {**state, "status": status}
@@ -115,11 +136,17 @@ def build_research_graph(registry: ToolRegistry | None = None):
     graph.add_node("execute", execute_node)
     graph.add_node("synthesize", synthesize_node)
     graph.add_node("verify", verify_node)
+    graph.add_node("replan", replan_node)
     graph.add_node("finalize", finalize_node)
     graph.set_entry_point("plan")
     graph.add_edge("plan", "execute")
     graph.add_edge("execute", "synthesize")
     graph.add_edge("synthesize", "verify")
-    graph.add_edge("verify", "finalize")
+    graph.add_conditional_edges(
+        "verify",
+        route_after_verification,
+        {"replan": "replan", "finalize": "finalize"},
+    )
+    graph.add_edge("replan", "synthesize")
     graph.add_edge("finalize", END)
     return graph.compile()

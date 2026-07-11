@@ -1,0 +1,106 @@
+{% extends "aggregator/base.html" %}
+{% block title %}校园信息研究 Agent · 中北信息聚合{% endblock %}
+{% block content %}
+<section class="hero">
+  <div class="tags">
+    <span class="tag">Planner</span>
+    <span class="tag">Tool Calling</span>
+    <span class="tag">Evidence Verifier</span>
+  </div>
+  <h1>校园信息研究 Agent</h1>
+  <p class="summary">提交一个研究目标，系统会规划任务、调用只读工具、核验引用并输出可追溯结果。</p>
+  <p class="callout">当前公网为 HTTP 演示环境，请勿输入个人隐私、账号或其他敏感信息。</p>
+</section>
+
+<form class="ask-form" id="research-form">
+  {% csrf_token %}
+  <input id="goal" type="search" maxlength="1000" required placeholder="例如：整理近期就业活动和报名截止时间" aria-label="研究目标">
+  <button type="submit">开始研究</button>
+</form>
+
+<section class="split">
+  <article class="item">
+    <h2>最终结果</h2>
+    <div id="answer" class="summary">尚未运行。</div>
+    <div id="citations" class="citation-list"></div>
+  </article>
+  <article class="item">
+    <h2>执行轨迹</h2>
+    <div id="trace" class="timeline"></div>
+  </article>
+</section>
+
+<script>
+  const form = document.getElementById("research-form");
+  const goalInput = document.getElementById("goal");
+  const answerNode = document.getElementById("answer");
+  const traceNode = document.getElementById("trace");
+  const citationsNode = document.getElementById("citations");
+  const csrfToken = form.querySelector("[name=csrfmiddlewaretoken]").value;
+
+  function requestId() {
+    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    return `browser-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function addTrace(text) {
+    const row = document.createElement("div");
+    row.className = "timeline-item";
+    row.textContent = text;
+    traceNode.appendChild(row);
+  }
+
+  async function loadResult(runId) {
+    const response = await fetch(`/api/v1/research-runs/${runId}`);
+    const payload = await response.json();
+    if (!payload.answer) return;
+    answerNode.textContent = payload.answer.answer;
+    citationsNode.innerHTML = "";
+    for (const citation of payload.answer.citations || []) {
+      const link = document.createElement("a");
+      link.className = "citation";
+      link.href = citation.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = `${citation.title} · ${citation.source}`;
+      citationsNode.appendChild(link);
+    }
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const goal = goalInput.value.trim();
+    if (!goal) return;
+    answerNode.textContent = "正在规划…";
+    traceNode.innerHTML = "";
+    citationsNode.innerHTML = "";
+    const response = await fetch("/api/v1/research-runs", {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "X-CSRFToken": csrfToken},
+      body: JSON.stringify({goal, client_request_id: requestId()}),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      answerNode.textContent = payload.error || "任务创建失败";
+      return;
+    }
+    const stream = new EventSource(payload.events_url);
+    stream.addEventListener("plan.created", (message) => addTrace(`已生成计划：${message.data}`));
+    stream.addEventListener("tool.completed", (message) => addTrace(`工具完成：${message.data}`));
+    stream.addEventListener("answer.delta", (message) => {
+      const eventPayload = JSON.parse(message.data);
+      if (answerNode.textContent === "正在规划…") answerNode.textContent = "";
+      answerNode.textContent += eventPayload.text || "";
+    });
+    stream.addEventListener("verification.passed", () => addTrace("证据验证通过"));
+    stream.addEventListener("run.completed", async () => {
+      stream.close();
+      await loadResult(payload.run_id);
+    });
+    stream.addEventListener("run.failed", () => {
+      stream.close();
+      answerNode.textContent = "任务执行失败，请稍后重试。";
+    });
+  });
+</script>
+{% endblock %}
