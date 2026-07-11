@@ -11,4 +11,5 @@ media/
 admin-credentials.txt
 wewe-rss/data/
 .playwright-mcp/
+.worktrees/
 docs/deploy-caddy-gunicorn-systemd-prompt.md
