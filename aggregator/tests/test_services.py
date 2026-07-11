@@ -213,6 +213,18 @@ def test_fetch_url_retries_direct_and_forces_ipv4(monkeypatch, settings):
     assert all(entry[0] == 2 for entry in calls[0])
 
 
+def test_rag_index_update_is_queued_after_database_commit(monkeypatch):
+    from aggregator.services.pipeline import _queue_rag_index
+
+    queued = []
+    monkeypatch.setattr("agent_runtime.tasks.index_content_item_rag.delay", lambda item_id: queued.append(item_id))
+    monkeypatch.setattr("aggregator.services.pipeline.transaction.on_commit", lambda callback: callback())
+
+    _queue_rag_index(42)
+
+    assert queued == [42]
+
+
 def test_employment_documents_are_built_from_json_api(monkeypatch, settings):
     settings.CRAWL_EMPLOYMENT_NOTICE_TYPE_IDS = ["10831"]
     settings.CRAWL_EMPLOYMENT_PAGE_SIZE = 2

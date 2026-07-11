@@ -145,6 +145,40 @@ def rebuild_rag_chunks(limit: int | None = None, sync_meili: bool = True) -> dic
     return {"created": created, "updated": updated, "meili_synced": meili_synced}
 
 
+def upsert_rag_chunks_for_item(item_id: int, sync_meili: bool = True) -> dict:
+    item = ContentItem.objects.select_related("source", "category").get(id=item_id)
+    existing_ids = list(item.rag_chunks.values_list("search_document_id", flat=True))
+    if item.status != ContentItem.Status.PUBLISHED or not item.is_public:
+        item.rag_chunks.all().delete()
+        if sync_meili and existing_ids:
+            _delete_meili_documents(existing_ids)
+        return {"chunk_count": 0, "removed": True, "meili_synced": 0}
+
+    body = "\n".join(part for part in [item.title, item.summary, item.content_text] if part).strip()
+    chunks = _chunk_text(
+        body,
+        settings.RAG_CHUNK_CHARS,
+        min(settings.RAG_CHUNK_OVERLAP_CHARS, settings.RAG_CHUNK_CHARS // 2),
+    )
+    documents = []
+    active_ids = []
+    for index, text in enumerate(chunks):
+        document_id = f"item-{item.id}-{index}"
+        chunk, _ = ContentChunk.objects.update_or_create(
+            content_item=item,
+            chunk_index=index,
+            defaults={"text": text, "search_document_id": document_id},
+        )
+        active_ids.append(document_id)
+        documents.append(_chunk_to_search_doc(chunk))
+    stale_ids = [document_id for document_id in existing_ids if document_id not in active_ids]
+    item.rag_chunks.exclude(search_document_id__in=active_ids).delete()
+    if sync_meili and stale_ids:
+        _delete_meili_documents(stale_ids)
+    meili_synced = sync_chunks_to_meilisearch(documents) if sync_meili and documents else 0
+    return {"chunk_count": len(documents), "removed": False, "meili_synced": meili_synced}
+
+
 def sync_chunks_to_meilisearch(documents: list[dict]) -> int:
     if not settings.MEILISEARCH_URL:
         return 0
@@ -161,6 +195,18 @@ def sync_chunks_to_meilisearch(documents: list[dict]) -> int:
         pass
     index.add_documents(documents)
     return len(documents)
+
+
+def _delete_meili_documents(document_ids: list[str]) -> None:
+    if not settings.MEILISEARCH_URL or not document_ids:
+        return
+    try:
+        import meilisearch
+
+        client = meilisearch.Client(settings.MEILISEARCH_URL, settings.MEILISEARCH_MASTER_KEY or None)
+        client.index(settings.MEILISEARCH_RAG_INDEX).delete_documents(document_ids)
+    except Exception:
+        return
 
 
 def retrieve_contexts(query: str, limit: int | None = None) -> list[RagContext]:

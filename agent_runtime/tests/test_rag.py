@@ -10,7 +10,13 @@ from django.utils import timezone
 from aggregator.models import Category, ContentItem, Source
 from agent_runtime.models import AgentRun, ContentChunk, LLMUsageEvent, RagMessage, RagSession
 from agent_runtime import services
-from agent_runtime.services import answer_question_events, rebuild_rag_chunks, retrieve_contexts, run_self_heal
+from agent_runtime.services import (
+    answer_question_events,
+    rebuild_rag_chunks,
+    retrieve_contexts,
+    run_self_heal,
+    upsert_rag_chunks_for_item,
+)
 
 
 @pytest.fixture
@@ -44,6 +50,28 @@ def test_rebuild_rag_chunks_indexes_public_content(published_item, settings):
     chunk = ContentChunk.objects.get(content_item=published_item)
     assert "就业招聘宣讲会" in chunk.text
     assert chunk.search_document_id == f"item-{published_item.id}-0"
+
+
+@pytest.mark.django_db
+def test_incremental_rag_index_updates_and_removes_unpublished_content(published_item, settings):
+    settings.MEILISEARCH_URL = ""
+    settings.RAG_CHUNK_CHARS = 30
+    settings.RAG_CHUNK_OVERLAP_CHARS = 5
+
+    first = upsert_rag_chunks_for_item(published_item.id, sync_meili=False)
+    assert first["chunk_count"] > 1
+
+    published_item.content_text = "短内容"
+    published_item.save(update_fields=["content_text", "updated_at"])
+    second = upsert_rag_chunks_for_item(published_item.id, sync_meili=False)
+    assert second["chunk_count"] == 1
+    assert ContentChunk.objects.filter(content_item=published_item).count() == 1
+
+    published_item.is_public = False
+    published_item.save(update_fields=["is_public", "updated_at"])
+    removed = upsert_rag_chunks_for_item(published_item.id, sync_meili=False)
+    assert removed == {"chunk_count": 0, "removed": True, "meili_synced": 0}
+    assert not ContentChunk.objects.filter(content_item=published_item).exists()
 
 
 @pytest.mark.django_db

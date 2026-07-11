@@ -10,6 +10,7 @@ from agent_runtime.research.planner import build_template_plan
 
 
 DATASET_PATH = Path(__file__).parent / "datasets" / "campus_research_v1.json"
+RETRIEVAL_FIXTURE_PATH = Path(__file__).parent / "datasets" / "campus_retrieval_v1.json"
 UNSAFE_TOOLS = {"retry_source", "reindex_items"}
 
 
@@ -76,5 +77,38 @@ def run_planner_evaluation(path: Path = DATASET_PATH) -> dict:
         "tool_selection_accuracy": round(selected_correctly / total, 4) if total else 0,
         "unsafe_tool_selection_count": unsafe_count,
         "total_cost_cny": "0",
+        "failures": failures,
+    }
+
+
+def load_retrieval_fixture(path: Path = RETRIEVAL_FIXTURE_PATH) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run_retrieval_evaluation(queries: list[dict], gold_ids: dict[str, int], registry) -> dict:
+    hits = 0
+    reciprocal_rank = 0.0
+    failures = []
+    from agent_runtime.research.tools import ToolContext
+
+    for case in queries:
+        result = registry.execute(
+            "search_public_content",
+            {"query": case["query"], "limit": 5},
+            ToolContext(actor_is_staff=False, run_id="offline-eval"),
+        )
+        item_ids = result["item_ids"]
+        gold_id = gold_ids[case["gold_key"]]
+        if gold_id in item_ids:
+            hits += 1
+            reciprocal_rank += 1 / (item_ids.index(gold_id) + 1)
+        else:
+            failures.append({"id": case["id"], "query": case["query"], "returned_ids": item_ids})
+    total = len(queries)
+    return {
+        "dataset_version": "campus-retrieval-v1",
+        "case_count": total,
+        "recall_at_5": round(hits / total, 4) if total else 0,
+        "mrr": round(reciprocal_rank / total, 4) if total else 0,
         "failures": failures,
     }

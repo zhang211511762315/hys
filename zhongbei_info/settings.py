@@ -116,6 +116,7 @@ CELERY_IMPORTS = ("aggregator.tasks_wewe_rss",)
 CELERY_BEAT_SCHEDULE = {}
 CELERY_TASK_ROUTES = {
     "agent_runtime.tasks.execute_research_run_task": {"queue": "agent"},
+    "agent_runtime.tasks.index_content_item_rag": {"queue": "agent"},
 }
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_REJECT_ON_WORKER_LOST = True

@@ -171,6 +171,7 @@ def ingest_extracted_document(
         _link_document_to_item(source, existing_item, raw_document, document)
         if existing_item.is_public:
             sync_item_to_search(existing_item)
+        _queue_rag_index(existing_item.id)
         return existing_item
 
     near_duplicate = _find_near_duplicate_item(document)
@@ -182,6 +183,7 @@ def ingest_extracted_document(
         _link_duplicate_group(near_duplicate)
         if near_duplicate.is_public:
             sync_item_to_search(near_duplicate)
+        _queue_rag_index(near_duplicate.id)
         return near_duplicate
 
     combined_text = _combine_ocr_text(document.text, document.image_urls, source)
@@ -225,7 +227,14 @@ def ingest_extracted_document(
             item.tags.add(tag)
     if item.is_public:
         sync_item_to_search(item)
+    _queue_rag_index(item.id)
     return item
+
+
+def _queue_rag_index(item_id: int) -> None:
+    from agent_runtime.tasks import index_content_item_rag
+
+    transaction.on_commit(lambda: index_content_item_rag.delay(item_id))
 
 
 def _combine_ocr_text(text: str, image_urls: list[str], source: Source | None = None) -> str:
