@@ -4,7 +4,7 @@ from django.urls import reverse
 
 from django.utils import timezone
 
-from aggregator.models import Category, ContentItem, ContentSource, Source
+from aggregator.models import Category, ContentItem, ContentSource, CrawlFailure, CrawlJob, Source
 
 
 @pytest.fixture(autouse=True)
@@ -387,7 +387,25 @@ def test_healthz_reports_freshness_fields(client):
     assert response.status_code == 200
     assert payload["latest_public_item_at"]
     assert payload["last_crawl_success_at"]
-    assert payload["open_failures"] == 0
+
+
+@pytest.mark.django_db
+def test_healthz_marks_stale_or_excessive_source_failures_as_unhealthy(settings, client):
+    settings.SOURCE_FRESHNESS_HOURS = 1
+    settings.SOURCE_OPEN_FAILURE_THRESHOLD = 0
+    source = Source.objects.create(
+        name="过期来源",
+        url="https://stale.example.edu/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+        last_success_at=timezone.now() - timezone.timedelta(hours=2),
+    )
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    CrawlFailure.objects.create(crawl_job=job, source=source, url=source.url)
+
+    payload = client.get("/healthz").json()
+
+    assert payload["source_health_ok"] is False
+    assert set(payload["source_health_alerts"]) == {"crawl_stale", "open_failures"}
 
 
 @pytest.mark.django_db
