@@ -1,0 +1,8 @@
+[Unit]
+Description=Create a transactional HYS MySQL backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/hys/deploy/scripts/backup_mysql.sh

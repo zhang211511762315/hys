@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily HYS Let's Encrypt renewal check
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=20m
+
+[Install]
+WantedBy=timers.target

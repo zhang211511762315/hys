@@ -21,17 +21,35 @@ docker compose exec web python manage.py migrate --noinput
 docker compose exec web python manage.py research_agent_eval --json
 ```
 
-The Nginx service publishes both ports and mounts `/etc/letsencrypt` read-only.
-The current certificate expires on 2026-10-10. Before expiry, renew it and
-reload Nginx:
+The Nginx service publishes both ports, serves the ACME webroot, and mounts
+`/etc/letsencrypt` read-only. Install the committed systemd unit and timer once:
 
 ```bash
-docker compose stop nginx
-docker run --rm --network host \
-  -v /etc/letsencrypt:/etc/letsencrypt \
-  certbot/certbot renew --standalone --non-interactive
-docker compose start nginx
+sudo cp deploy/systemd/hys-certbot-renew.service /etc/systemd/system/
+sudo cp deploy/systemd/hys-certbot-renew.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hys-certbot-renew.timer
 ```
+
+The timer checks daily and runs `certbot renew --webroot`, then reloads Nginx
+without stopping HTTPS traffic. Verify it with `systemctl list-timers
+hys-certbot-renew.timer`.
+
+## Backups and restore proof
+
+Run `sudo deploy/scripts/backup_mysql.sh` daily from a root-owned timer; it
+writes compressed, checksummed backups to `/var/backups/hys` and keeps seven
+days by default. Validate a backup without touching production data with:
+
+```bash
+sudo deploy/scripts/verify_mysql_restore.sh /var/backups/hys/hys-mysql-<timestamp>.sql.gz
+```
+
+The restore script creates a temporary isolated MySQL container and volume,
+checks the checksum and required tables, then removes only its own resources.
+Install `deploy/systemd/hys-backup.service` and `deploy/systemd/hys-backup.timer`
+with the same `systemctl daemon-reload` and `enable --now` flow as certificate
+renewal.
 
 Verify `docker compose ps`, `/healthz`, one research run, its SSE trace and a Replay. Confirm only `agent_worker` consumes the `agent` queue.
 

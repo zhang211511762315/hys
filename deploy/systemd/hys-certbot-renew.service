@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew the HYS Let's Encrypt certificate without stopping Nginx
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/hys
+ExecStart=/usr/bin/docker compose --profile ops run --rm certbot renew --webroot -w /var/www/certbot
+ExecStartPost=/usr/bin/docker compose exec -T nginx nginx -s reload

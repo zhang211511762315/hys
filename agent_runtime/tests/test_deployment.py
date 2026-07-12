@@ -103,6 +103,30 @@ def test_scheduled_public_site_probe_checks_https_and_certificate():
     assert "openssl x509 -noout -checkend" in workflow
 
 
+def test_compose_and_nginx_support_webroot_certificate_renewal():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    nginx = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
+    service = (ROOT / "deploy" / "systemd" / "hys-certbot-renew.service").read_text(encoding="utf-8")
+    timer = (ROOT / "deploy" / "systemd" / "hys-certbot-renew.timer").read_text(encoding="utf-8")
+
+    assert "certbot:" in compose
+    assert "certbot_webroot" in compose
+    assert "location ^~ /.well-known/acme-challenge/" in nginx
+    assert "certbot renew --webroot" in service
+    assert "nginx -s reload" in service
+    assert "OnCalendar=daily" in timer
+
+
+def test_backup_scripts_use_transactional_dump_and_temporary_restore_container():
+    backup = (ROOT / "deploy" / "scripts" / "backup_mysql.sh").read_text(encoding="utf-8")
+    restore = (ROOT / "deploy" / "scripts" / "verify_mysql_restore.sh").read_text(encoding="utf-8")
+
+    assert "--single-transaction" in backup
+    assert "sha256sum" in backup
+    assert "MYSQL_ROOT_PASSWORD" in restore
+    assert "trap cleanup EXIT" in restore
+
+
 @pytest.mark.django_db
 def test_research_agent_smoke_reports_ready_runtime():
     output = StringIO()
