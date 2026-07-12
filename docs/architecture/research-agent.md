@@ -21,6 +21,8 @@ Trust boundaries:
 - Scraped text is untrusted evidence, never instructions.
 - Fetch and OCR validate initial and redirected URLs and reject private/reserved targets.
 - Public tools cannot resolve staff tools. Repair actions require staff approval and an idempotency key.
-- Public mode is stateless until HTTPS is available; session memory is opt-in.
+- HTTPS is active for the public site. Anonymous mode remains short-session by
+  policy; session memory is feature-gated until it is scoped to an authenticated
+  user and given an explicit retention lifecycle.
 
 The 2C2G deployment uses one web worker, one general worker and one single-concurrency Agent worker. This isolates long model/tool calls from crawling and avoids claiming unmeasured high concurrency.

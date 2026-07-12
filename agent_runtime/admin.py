@@ -7,6 +7,7 @@ from .models import (
     AgentStep,
     ContentChunk,
     LLMUsageEvent,
+    MemoryEntry,
     RagCitation,
     RagMessage,
     RagSession,
@@ -74,12 +75,13 @@ class ContentChunkAdmin(admin.ModelAdmin):
 
 @admin.register(RagSession)
 class RagSessionAdmin(admin.ModelAdmin):
-    list_display = ("title", "session_key", "total_input_tokens", "total_output_tokens", "total_cost_cny", "updated_at")
+    list_display = ("title", "user", "session_key", "total_input_tokens", "total_output_tokens", "total_cost_cny", "expires_at", "updated_at")
     search_fields = ("title", "session_key")
     readonly_fields = ("created_at", "updated_at")
 
 
 admin.site.register(RagMessage)
+admin.site.register(MemoryEntry)
 admin.site.register(RagCitation)
 admin.site.register(LLMUsageEvent)
 admin.site.register(AgentEvent)

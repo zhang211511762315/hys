@@ -19,10 +19,12 @@ The work covers five bounded areas:
 4. data freshness, failure visibility, and sitemap coverage;
 5. deployment smoke checks, tests, and documentation.
 
-HTTPS is not enabled in this change because the server currently has only an
-IP endpoint and no user-provided certificate/domain. Production secrets are
-not rotated automatically; the audit records the need and the deployment
-avoids printing or committing them. Database volumes are never removed.
+Historical status at design time: HTTPS was not enabled because the server had
+only an IP endpoint. It was subsequently enabled for
+`schoolsearchzzychen.online` and `www.schoolsearchzzychen.online` in commit
+`e0b5e9a`; certificate renewal and secret rotation remain separate operational
+work. Production secrets are never printed or committed, and database volumes
+are never removed.
 
 ## Architecture
 

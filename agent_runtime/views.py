@@ -4,19 +4,23 @@ import math
 import time
 
 from django.conf import settings
+from django.contrib.auth import login, logout
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.forms import PasswordChangeForm
 from django.core.cache import cache
 from django.db.models import Count, Max, Sum
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.utils import timezone
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from aggregator.models import AIUsageDaily, ContentItem, CrawlFailure, Source
 
-from .models import AgentRun, ContentChunk, LLMUsageEvent, RagMessage, RagSession, ToolInvocation
+from .forms import SignupForm
+from .models import AgentRun, ContentChunk, LLMUsageEvent, MemoryEntry, RagMessage, RagSession, ToolInvocation
 from .research.runtime import cancel_research_run, create_research_run, replay_research_run
 from .research.schemas import CreateResearchRunInput
-from .services import answer_question_events, new_session_key, sse_event
+from .services import answer_question_events, cleanup_expired_memory, new_session_key, save_explicit_memory, sse_event
 from .tasks import execute_research_run_task
 
 RAG_SESSION_COOKIE = "rag_session_key"
@@ -25,12 +29,13 @@ RAG_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
 
 @require_GET
 def ask(request):
+    user = request.user if request.user.is_authenticated else None
     if request.GET.get("new") == "1":
         session_key = new_session_key()
     else:
         session_key = request.GET.get("session") or request.COOKIES.get(RAG_SESSION_COOKIE) or new_session_key()
 
-    current_session = RagSession.objects.filter(session_key=session_key).first()
+    current_session = RagSession.objects.filter(session_key=session_key, user=user).first()
     history_messages = []
     history_questions = []
     if current_session is not None:
@@ -83,7 +88,11 @@ async def ask_stream(request):
 
     async def stream():
         try:
-            iterator = answer_question_events(question, session_key)
+            iterator = answer_question_events(
+                question,
+                session_key,
+                user=request.user if request.user.is_authenticated else None,
+            )
         except Exception:
             yield sse_event({"type": "error", "message": "问答生成中断，请稍后重试或换个问法。"})
             yield sse_event({"type": "done"})
@@ -103,6 +112,100 @@ async def ask_stream(request):
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
     return response
+
+
+@require_http_methods(["GET", "POST"])
+def signup(request):
+    if request.user.is_authenticated:
+        return redirect("agent_runtime:account_privacy")
+    form = SignupForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        user = form.save()
+        login(request, user)
+        return redirect("agent_runtime:account_privacy")
+    return render(request, "agent_runtime/signup.html", {"form": form})
+
+
+@require_POST
+def account_logout(request):
+    logout(request)
+    return redirect("aggregator:home")
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def account_password_change(request):
+    form = PasswordChangeForm(request.user, request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        user = form.save()
+        login(request, user)
+        return redirect("agent_runtime:account_privacy")
+    return render(request, "agent_runtime/password_change.html", {"form": form})
+
+
+@login_required
+@require_GET
+def account_privacy(request):
+    return render(
+        request,
+        "agent_runtime/account_privacy.html",
+        {
+            "memories": MemoryEntry.objects.filter(user=request.user),
+            "sessions": RagSession.objects.filter(user=request.user).order_by("-updated_at")[:20],
+            "memory_retention_days": settings.MEMORY_RETENTION_DAYS,
+        },
+    )
+
+
+@login_required
+@require_POST
+def account_delete(request):
+    user = request.user
+    logout(request)
+    user.delete()
+    return redirect("aggregator:home")
+
+
+def _memory_user_or_error(request):
+    if request.user.is_authenticated:
+        return request.user, None
+    return None, JsonResponse({"error": "authentication required"}, status=403)
+
+
+@require_http_methods(["GET", "POST"])
+def memory_collection(request):
+    user, error = _memory_user_or_error(request)
+    if error:
+        return error
+    if request.method == "GET":
+        memories = [
+            {"id": str(memory.public_id), "content": memory.content}
+            for memory in MemoryEntry.objects.filter(user=user)
+        ]
+        return JsonResponse({"memories": memories})
+    try:
+        payload = json.loads(request.body or "{}")
+        content = str(payload.get("content", ""))
+        session_key = str(payload.get("session", ""))
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "invalid request"}, status=400)
+    session = RagSession.objects.filter(session_key=session_key, user=user).first() if session_key else None
+    try:
+        memory = save_explicit_memory(user, content, source_session=session)
+    except ValueError:
+        return JsonResponse({"error": "memory content is required"}, status=400)
+    return JsonResponse({"id": str(memory.public_id), "content": memory.content}, status=201)
+
+
+@require_http_methods(["DELETE"])
+def memory_detail(request, memory_id):
+    user, error = _memory_user_or_error(request)
+    if error:
+        return error
+    deleted, _ = MemoryEntry.objects.filter(public_id=memory_id, user=user).delete()
+    if not deleted:
+        return JsonResponse({"error": "not found"}, status=404)
+    return HttpResponse(status=204)
 
 
 @require_GET

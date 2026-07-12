@@ -28,6 +28,7 @@ from .models import (
     RagCitation,
     RagMessage,
     RagSession,
+    MemoryEntry,
 )
 from .graph import build_rag_graph
 from .schemas import RagAnswerSchema, SelfHealPlanSchema, UsageReportSchema
@@ -89,16 +90,49 @@ def new_session_key() -> str:
     return secrets.token_urlsafe(24)
 
 
-def get_or_create_session(session_key: str | None, title: str = "") -> RagSession:
+def get_or_create_session(session_key: str | None, title: str = "", user=None) -> RagSession:
     key = session_key or new_session_key()
-    session, created = RagSession.objects.get_or_create(
-        session_key=key,
-        defaults={"title": title[:160]},
-    )
+    now = timezone.now()
+    expires_at = now + timezone.timedelta(days=max(1, settings.RAG_SESSION_RETENTION_DAYS))
+    session = RagSession.objects.filter(session_key=key).first()
+    if session is not None and session.user_id and session.user_id != getattr(user, "id", None):
+        session = None
+        key = new_session_key()
+    if session is None:
+        session = RagSession.objects.create(session_key=key, title=title[:160], user=user, expires_at=expires_at)
+    else:
+        update_fields = ["updated_at"]
+        if user is not None and session.user_id is None:
+            session.user = user
+            update_fields.append("user")
+        session.expires_at = expires_at
+        update_fields.append("expires_at")
+        session.save(update_fields=update_fields)
     if not session.title and title:
         session.title = title[:160]
         session.save(update_fields=["title", "updated_at"])
     return session
+
+
+def save_explicit_memory(user, content: str, source_session: RagSession | None = None) -> MemoryEntry:
+    clean_content = (content or "").strip()[:1000]
+    if not clean_content:
+        raise ValueError("memory content is required")
+    now = timezone.now()
+    return MemoryEntry.objects.create(
+        user=user,
+        source_session=source_session,
+        content=clean_content,
+        consented_at=now,
+        expires_at=now + timezone.timedelta(days=max(1, settings.MEMORY_RETENTION_DAYS)),
+    )
+
+
+def cleanup_expired_memory(now=None) -> dict[str, int]:
+    now = now or timezone.now()
+    memory_deleted, _ = MemoryEntry.objects.filter(expires_at__lte=now).delete()
+    session_deleted, _ = RagSession.objects.filter(expires_at__lte=now).delete()
+    return {"memory_deleted": memory_deleted, "session_deleted": session_deleted}
 
 
 def rebuild_rag_chunks(limit: int | None = None, sync_meili: bool = True) -> dict:
@@ -220,7 +254,7 @@ def retrieve_contexts(query: str, limit: int | None = None) -> list[RagContext]:
     return _retrieve_contexts_from_db(query, limit)
 
 
-def answer_question_events(question: str, session_key: str | None = None) -> Iterable[dict]:
+def answer_question_events(question: str, session_key: str | None = None, user=None) -> Iterable[dict]:
     question = (question or "").strip()[:1000]
     session = None
     run = None
@@ -230,7 +264,7 @@ def answer_question_events(question: str, session_key: str | None = None) -> Ite
     usage_event = None
     contexts: list[RagContext] = []
     try:
-        session = get_or_create_session(session_key, question)
+        session = get_or_create_session(session_key, question, user=user)
         run = AgentRun.objects.create(kind=AgentRun.Kind.RAG, trigger="ask_page")
         retrieval_step = AgentStep.objects.create(
             run=run,

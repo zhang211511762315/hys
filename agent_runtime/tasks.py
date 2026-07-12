@@ -2,7 +2,7 @@ from celery import shared_task
 
 from .models import AgentRun
 from .research.runtime import execute_research_run
-from .services import upsert_rag_chunks_for_item
+from .services import cleanup_expired_memory, upsert_rag_chunks_for_item
 
 
 @shared_task(
@@ -29,3 +29,8 @@ def execute_research_run_task(self, public_id: str):
 )
 def index_content_item_rag(item_id: int):
     return upsert_rag_chunks_for_item(item_id)
+
+
+@shared_task
+def cleanup_expired_memory_task():
+    return cleanup_expired_memory()

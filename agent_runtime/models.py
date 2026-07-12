@@ -207,7 +207,15 @@ class ContentChunk(TimeStampedModel):
 
 class RagSession(TimeStampedModel):
     session_key = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="rag_sessions",
+    )
     title = models.CharField(max_length=160, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
     total_input_tokens = models.PositiveIntegerField(default=0)
     total_output_tokens = models.PositiveIntegerField(default=0)
     total_cost_cny = models.DecimalField(max_digits=10, decimal_places=6, default=Decimal("0"))
@@ -219,6 +227,26 @@ class RagSession(TimeStampedModel):
 
     def __str__(self):
         return self.title or self.session_key
+
+
+class MemoryEntry(TimeStampedModel):
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memory_entries")
+    source_session = models.ForeignKey(
+        RagSession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="memory_entries",
+    )
+    content = models.CharField(max_length=1000)
+    consented_at = models.DateTimeField()
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "长期记忆"
+        verbose_name_plural = "长期记忆"
 
 
 class RagMessage(TimeStampedModel):

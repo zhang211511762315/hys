@@ -1,0 +1,13 @@
+{% extends "aggregator/base.html" %}
+{% block title %}注册 · 中北信息聚合{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>创建账户</h1>
+  <p class="callout">登录后可主动保存并管理长期记忆。匿名问答不会自动写入长期记忆。</p>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button class="button" type="submit">注册并继续</button>
+  </form>
+</section>
+{% endblock %}

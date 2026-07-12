@@ -1,12 +1,41 @@
 from pathlib import Path
 import json
 from io import StringIO
+import os
+import subprocess
+import sys
 
 import pytest
 from django.core.management import call_command, CommandError
 from django.test import override_settings
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_test_settings_ignore_production_https_environment():
+    env = {
+        **os.environ,
+        "PUBLIC_SITE_BASE_URL": "https://schoolsearchzzychen.online",
+        "SECURE_SSL_REDIRECT": "1",
+        "SECURE_COOKIES": "1",
+        "SECURE_HSTS_SECONDS": "31536000",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os; os.environ['DJANGO_SETTINGS_MODULE'] = 'zhongbei_info.settings_test'; "
+            "from django.conf import settings; "
+            "print(settings.SECURE_SSL_REDIRECT, settings.SESSION_COOKIE_SECURE, settings.SECURE_HSTS_SECONDS)",
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False False 0"
 
 
 def test_compose_has_durable_redis_and_dedicated_agent_worker():
