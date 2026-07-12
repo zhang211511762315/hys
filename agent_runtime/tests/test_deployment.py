@@ -45,3 +45,18 @@ def test_research_agent_smoke_reports_ready_runtime():
 def test_research_agent_smoke_fails_when_agent_queue_is_missing():
     with pytest.raises(CommandError, match="agent queue"):
         call_command("research_agent_smoke")
+
+
+def test_existing_agentruns_get_unique_public_ids_during_migration():
+    import importlib
+
+    migration = importlib.import_module("agent_runtime.migrations.0003_research_runtime")
+
+    operations = migration.Migration.operations
+    assert any(operation.__class__.__name__ == "RunPython" for operation in operations)
+    add_public_id = next(
+        operation for operation in operations
+        if operation.__class__.__name__ == "AddField" and operation.name == "public_id"
+    )
+    assert add_public_id.field.null is True
+    assert add_public_id.field.unique is False
