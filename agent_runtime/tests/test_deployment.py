@@ -26,6 +26,21 @@ def test_production_nginx_has_no_undeclared_test_upstream():
     assert "location /__test/" not in nginx
 
 
+def test_production_nginx_has_domain_https_and_http_redirect():
+    nginx = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
+    assert "server_name schoolsearchzzychen.online www.schoolsearchzzychen.online;" in nginx
+    assert "listen 443 ssl;" in nginx
+    assert "ssl_certificate /etc/letsencrypt/live/schoolsearchzzychen.online/fullchain.pem;" in nginx
+    assert "ssl_certificate_key /etc/letsencrypt/live/schoolsearchzzychen.online/privkey.pem;" in nginx
+    assert "return 301 https://$host$request_uri;" in nginx
+
+
+def test_compose_publishes_https_and_mounts_certificates():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert '"443:443"' in compose
+    assert "/etc/letsencrypt:/etc/letsencrypt:ro" in compose
+
+
 @pytest.mark.django_db
 def test_research_agent_smoke_reports_ready_runtime():
     output = StringIO()

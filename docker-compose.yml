@@ -131,9 +131,11 @@ services:
         condition: service_started
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - static_data:/staticfiles:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
 
 volumes:
   mysql_data:
