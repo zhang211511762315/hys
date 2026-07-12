@@ -10,4 +10,5 @@
     <input type="date" name="date_to" value="{{ date_to }}" placeholder="截止日期" aria-label="截止日期">
     <button type="submit">筛选</button>
   </form>
+  {% if date_error %}<span class="usage-line" role="alert">{{ date_error }}</span>{% endif %}
 </div>

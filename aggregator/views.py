@@ -136,11 +136,20 @@ def _apply_sort_and_date_range(request, queryset):
     sort = request.GET.get("sort", "relevance")
     date_from = request.GET.get("date_from", "").strip()
     date_to = request.GET.get("date_to", "").strip()
+    date_error = ""
 
     if date_from:
-        queryset = queryset.filter(source_published_at__gte=_parse_date_start(date_from))
+        parsed_from = _parse_date_start(date_from)
+        if parsed_from is None:
+            date_error = "日期格式无效：起始日期应为 YYYY-MM-DD。"
+        else:
+            queryset = queryset.filter(source_published_at__gte=parsed_from)
     if date_to:
-        queryset = queryset.filter(source_published_at__lte=_parse_date_end(date_to))
+        parsed_to = _parse_date_end(date_to)
+        if parsed_to is None:
+            date_error = "日期格式无效：截止日期应为 YYYY-MM-DD。"
+        else:
+            queryset = queryset.filter(source_published_at__lte=parsed_to)
 
     if sort == "date":
         queryset = queryset.order_by(*DATE_ORDERING)
@@ -149,6 +158,7 @@ def _apply_sort_and_date_range(request, queryset):
         "sort": sort,
         "date_from": date_from,
         "date_to": date_to,
+        "date_error": date_error,
         "base_query": _base_query(request),
     }
     return queryset, ctx

@@ -5,7 +5,7 @@ import time
 
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Count, Sum
+from django.db.models import Count, Max, Sum
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.utils import timezone
@@ -151,12 +151,19 @@ def agent_dashboard(request):
 
 @require_GET
 def healthz(request):
+    latest_public_item_at = ContentItem.objects.filter(
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+    ).aggregate(value=Max("source_published_at"))["value"]
+    last_crawl_success_at = Source.objects.aggregate(value=Max("last_success_at"))["value"]
     payload = {
         "ok": True,
         "time": timezone.now().isoformat(),
         "published_items": ContentItem.objects.filter(status=ContentItem.Status.PUBLISHED, is_public=True).count(),
         "rag_chunks": ContentChunk.objects.count(),
         "open_failures": CrawlFailure.objects.filter(resolved_at__isnull=True).count(),
+        "latest_public_item_at": latest_public_item_at.isoformat() if latest_public_item_at else None,
+        "last_crawl_success_at": last_crawl_success_at.isoformat() if last_crawl_success_at else None,
     }
     return JsonResponse(payload)
 

@@ -304,7 +304,7 @@ def test_robots_txt_points_to_sitemap(client, settings):
     assert response.status_code == 200
     assert response["Content-Type"].startswith("text/plain")
     assert "Disallow: /admin/" in response.content.decode()
-    assert "Sitemap: http://testserver/sitemap.xml" in response.content.decode()
+    assert "Sitemap: http://testserver/sitemap-index.xml" in response.content.decode()
 
 
 def test_favicon_returns_image(client):
@@ -323,3 +323,76 @@ def test_sitemap_xml_includes_homepage(client, settings):
     assert response.status_code == 200
     assert response["Content-Type"].startswith("application/xml")
     assert "<loc>http://testserver/</loc>" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_sitemap_index_and_chunks_cover_more_than_one_page(client, settings):
+    settings.PUBLIC_SITE_BASE_URL = "http://testserver"
+    source = Source.objects.create(
+        name="站点地图来源",
+        url="https://sitemap.example.edu/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    ContentItem.objects.bulk_create(
+        [
+            ContentItem(
+                source=source,
+                title=f"地图内容 {index}",
+                canonical_url=f"https://sitemap.example.edu/items/{index}",
+                summary="摘要",
+                content_text="正文",
+                status=ContentItem.Status.PUBLISHED,
+                is_public=True,
+                source_published_at=timezone.datetime(2026, 7, 1, tzinfo=timezone.get_current_timezone()),
+            )
+            for index in range(501)
+        ]
+    )
+
+    index_response = client.get("/sitemap-index.xml")
+    first_chunk = client.get("/sitemap.xml")
+    second_chunk = client.get("/sitemap-items-2.xml")
+
+    assert index_response.status_code == 200
+    assert "sitemap-items-2.xml" in index_response.content.decode()
+    assert first_chunk.status_code == 200
+    assert second_chunk.status_code == 200
+    assert first_chunk.content.decode().count("<url>") <= 500
+    assert second_chunk.content.decode().count("<url>") <= 500
+    assert "/items/501/" in second_chunk.content.decode()
+
+
+@pytest.mark.django_db
+def test_healthz_reports_freshness_fields(client):
+    source = Source.objects.create(
+        name="健康检查来源",
+        url="https://health.example.edu/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+        last_success_at=timezone.datetime(2026, 7, 12, 8, 0, tzinfo=timezone.get_current_timezone()),
+    )
+    ContentItem.objects.create(
+        source=source,
+        title="最新公开内容",
+        canonical_url="https://health.example.edu/latest",
+        summary="摘要",
+        content_text="正文",
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+        source_published_at=timezone.datetime(2026, 7, 12, 9, 0, tzinfo=timezone.get_current_timezone()),
+    )
+
+    response = client.get("/healthz")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["latest_public_item_at"]
+    assert payload["last_crawl_success_at"]
+    assert payload["open_failures"] == 0
+
+
+@pytest.mark.django_db
+def test_invalid_date_filter_is_user_safe(client):
+    response = client.get(reverse("aggregator:search"), {"date_from": "not-a-date"})
+
+    assert response.status_code == 200
+    assert "日期格式无效" in response.content.decode()
