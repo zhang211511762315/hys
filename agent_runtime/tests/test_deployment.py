@@ -78,11 +78,13 @@ def test_readiness_and_local_metrics_report_runtime_state():
 
     readiness = client.get("/readyz")
     metrics = client.get("/internal/metrics", REMOTE_ADDR="127.0.0.1")
+    proxied_metrics = client.get("/internal/metrics", REMOTE_ADDR="172.18.0.2", HTTP_X_INTERNAL_METRICS="1")
     forbidden = client.get("/internal/metrics", REMOTE_ADDR="203.0.113.1")
 
     assert readiness.status_code == 200
     assert readiness.json()["ok"] is True
     assert metrics.status_code == 200
+    assert proxied_metrics.status_code == 200
     assert "hys_published_items" in metrics.content.decode()
     assert forbidden.status_code == 404
 
@@ -93,6 +95,7 @@ def test_nginx_limits_internal_metrics_to_loopback():
     assert "location = /internal/metrics" in nginx
     assert "allow 127.0.0.1;" in nginx
     assert "deny all;" in nginx
+    assert 'proxy_set_header X-Internal-Metrics "1";' in nginx
 
 
 def test_scheduled_public_site_probe_checks_https_and_certificate():

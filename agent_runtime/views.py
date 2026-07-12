@@ -314,7 +314,8 @@ def readyz(request):
 @require_GET
 def internal_metrics(request):
     remote_addr = request.META.get("REMOTE_ADDR", "")
-    if remote_addr not in {"127.0.0.1", "::1"}:
+    internal_proxy = request.META.get("HTTP_X_INTERNAL_METRICS") == "1"
+    if remote_addr not in {"127.0.0.1", "::1"} and not internal_proxy:
         return HttpResponse(status=404)
     published_items = ContentItem.objects.filter(status=ContentItem.Status.PUBLISHED, is_public=True).count()
     open_failures = CrawlFailure.objects.filter(resolved_at__isnull=True).count()
