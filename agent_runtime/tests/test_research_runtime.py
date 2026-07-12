@@ -3,6 +3,7 @@ import json
 import pytest
 from django.core.cache import cache
 from django.test import Client
+from django.utils import timezone
 
 from aggregator.models import Category, ContentItem, Source
 
@@ -167,6 +168,27 @@ def test_cancel_research_run_marks_terminal_and_emits_event():
 
 
 @pytest.mark.django_db
+def test_cancel_is_idempotent_after_terminal_state():
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import create_research_run
+
+    run, _ = create_research_run("终态取消", "cancel-terminal-01")
+    run.status = AgentRun.Status.SUCCEEDED
+    run.finished_at = timezone.now()
+    run.save(update_fields=["status", "finished_at", "updated_at"])
+
+    response = Client().post(f"/api/v1/research-runs/{run.public_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": str(run.public_id),
+        "status": AgentRun.Status.SUCCEEDED,
+        "cancelled": False,
+    }
+    assert not run.events.filter(event_type="run.cancelled").exists()
+
+
+@pytest.mark.django_db
 def test_replay_creates_new_run_with_frozen_versions(monkeypatch):
     from agent_runtime.models import AgentRun
     from agent_runtime.research.runtime import create_research_run
@@ -218,6 +240,18 @@ def test_research_page_uses_post_api_and_event_stream():
     assert 'fetch("/api/v1/research-runs"' in html
     assert 'method: "POST"' in html
     assert "new EventSource(payload.events_url)" in html
+
+
+@pytest.mark.django_db
+def test_research_page_exposes_cancel_replay_and_stream_error_states():
+    html = Client().get("/research/").content.decode()
+
+    assert 'id="cancel-run"' in html
+    assert 'id="replay-run"' in html
+    assert "activeStream.onerror" in html
+    assert "请求过于频繁" in html
+    assert 'fetch(`/api/v1/research-runs/${activeRunId}/cancel`' in html
+    assert 'fetch(`/api/v1/research-runs/${runId}/replay`' in html
     assert "?q=" not in html
 
 
