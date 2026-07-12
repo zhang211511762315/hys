@@ -256,6 +256,7 @@ def test_research_page_uses_post_api_and_event_stream():
     assert 'fetch("/api/v1/research-runs"' in html
     assert 'method: "POST"' in html
     assert "new EventSource(payload.events_url)" in html
+    assert "当前公网为 HTTP 演示环境" not in html
 
 
 @pytest.mark.django_db
