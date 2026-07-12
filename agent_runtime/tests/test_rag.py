@@ -75,6 +75,24 @@ def test_incremental_rag_index_updates_and_removes_unpublished_content(published
 
 
 @pytest.mark.django_db
+def test_rag_index_attaches_user_provided_vectors_when_semantic_mode_is_enabled(published_item, settings, monkeypatch):
+    settings.RAG_SEMANTIC_ENABLED = True
+    settings.EMBEDDING_MODEL = "test-multilingual"
+    settings.RAG_EMBEDDER_NAME = "campus-test"
+    captured = []
+    monkeypatch.setattr(services, "_embed_texts", lambda texts: [[0.1, 0.2] for _ in texts])
+    monkeypatch.setattr(services, "sync_chunks_to_meilisearch", lambda documents: captured.extend(documents) or len(documents))
+
+    result = rebuild_rag_chunks()
+
+    assert result["meili_synced"] == 1
+    assert captured[0]["_vectors"] == {"campus-test": [0.1, 0.2]}
+    chunk = ContentChunk.objects.get(content_item=published_item)
+    assert chunk.embedding_version == "test-multilingual"
+    assert chunk.embedding_fingerprint
+
+
+@pytest.mark.django_db
 def test_retrieve_contexts_returns_public_chunks(published_item, settings):
     settings.MEILISEARCH_URL = ""
     rebuild_rag_chunks(sync_meili=False)

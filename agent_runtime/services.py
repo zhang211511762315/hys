@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
+import hashlib
 import json
 import re
 import secrets
@@ -174,6 +175,7 @@ def rebuild_rag_chunks(limit: int | None = None, sync_meili: bool = True) -> dic
 
     meili_synced = 0
     if sync_meili and documents:
+        _attach_embeddings(documents)
         meili_synced = sync_chunks_to_meilisearch(documents)
 
     return {"created": created, "updated": updated, "meili_synced": meili_synced}
@@ -209,7 +211,11 @@ def upsert_rag_chunks_for_item(item_id: int, sync_meili: bool = True) -> dict:
     item.rag_chunks.exclude(search_document_id__in=active_ids).delete()
     if sync_meili and stale_ids:
         _delete_meili_documents(stale_ids)
-    meili_synced = sync_chunks_to_meilisearch(documents) if sync_meili and documents else 0
+    if sync_meili and documents:
+        _attach_embeddings(documents)
+        meili_synced = sync_chunks_to_meilisearch(documents)
+    else:
+        meili_synced = 0
     return {"chunk_count": len(documents), "removed": False, "meili_synced": meili_synced}
 
 
@@ -225,6 +231,17 @@ def sync_chunks_to_meilisearch(documents: list[dict]) -> int:
     try:
         index.update_searchable_attributes(["title", "summary", "text", "source", "category"])
         index.update_filterable_attributes(["item_id", "source", "category", "published_at"])
+        if documents and "_vectors" in documents[0]:
+            index.update_settings(
+                {
+                    "embedders": {
+                        settings.RAG_EMBEDDER_NAME: {
+                            "source": "userProvided",
+                            "dimensions": len(documents[0]["_vectors"][settings.RAG_EMBEDDER_NAME]),
+                        }
+                    }
+                }
+            )
     except Exception:
         pass
     index.add_documents(documents)
@@ -241,6 +258,48 @@ def _delete_meili_documents(document_ids: list[str]) -> None:
         client.index(settings.MEILISEARCH_RAG_INDEX).delete_documents(document_ids)
     except Exception:
         return
+
+
+def _semantic_enabled() -> bool:
+    return bool(
+        settings.RAG_SEMANTIC_ENABLED
+        and settings.EMBEDDING_BASE_URL
+        and settings.EMBEDDING_API_KEY
+        and settings.EMBEDDING_MODEL
+    )
+
+
+def _embed_texts(texts: list[str]) -> list[list[float]]:
+    if not _semantic_enabled() or not texts:
+        return []
+    response = httpx.post(
+        f"{settings.EMBEDDING_BASE_URL.rstrip('/')}/embeddings",
+        headers={"Authorization": f"Bearer {settings.EMBEDDING_API_KEY}"},
+        json={"model": settings.EMBEDDING_MODEL, "input": texts},
+        timeout=settings.EMBEDDING_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = sorted(payload.get("data", []), key=lambda row: row.get("index", 0))
+    vectors = [row.get("embedding") for row in rows]
+    if len(vectors) != len(texts) or any(not isinstance(vector, list) for vector in vectors):
+        raise ValueError("embedding response does not match input")
+    return vectors
+
+
+def _attach_embeddings(documents: list[dict]) -> None:
+    if not settings.RAG_SEMANTIC_ENABLED or not documents:
+        return
+    vectors = _embed_texts([document["text"] for document in documents])
+    if not vectors:
+        return
+    for document, vector in zip(documents, vectors, strict=True):
+        fingerprint = hashlib.sha256(document["text"].encode("utf-8")).hexdigest()
+        document["_vectors"] = {settings.RAG_EMBEDDER_NAME: vector}
+        ContentChunk.objects.filter(search_document_id=document["id"]).update(
+            embedding_fingerprint=fingerprint,
+            embedding_version=settings.EMBEDDING_MODEL,
+        )
 
 
 def retrieve_contexts(query: str, limit: int | None = None) -> list[RagContext]:
@@ -707,7 +766,21 @@ def _retrieve_contexts_from_meili(query: str, limit: int) -> list[RagContext]:
         return []
     try:
         client = meilisearch.Client(settings.MEILISEARCH_URL, settings.MEILISEARCH_MASTER_KEY or None)
-        result = client.index(settings.MEILISEARCH_RAG_INDEX).search(query, {"limit": limit})
+        params: dict = {"limit": limit * 3}
+        semantic = _semantic_enabled()
+        if semantic:
+            vectors = _embed_texts([query])
+            if vectors:
+                params.update(
+                    {
+                        "vector": vectors[0],
+                        "hybrid": {
+                            "embedder": settings.RAG_EMBEDDER_NAME,
+                            "semanticRatio": settings.RAG_SEMANTIC_RATIO,
+                        },
+                    }
+                )
+        result = client.index(settings.MEILISEARCH_RAG_INDEX).search(query, params)
     except Exception:
         return []
     contexts = []
@@ -722,8 +795,14 @@ def _retrieve_contexts_from_meili(query: str, limit: int) -> list[RagContext]:
         except ContentItem.DoesNotExist:
             continue
         text = hit.get("text", "")
-        score = _score_text(query, f"{hit.get('title', '')} {text}")
-        if score <= 0:
+        lexical_score = _score_text(query, f"{hit.get('title', '')} {text}")
+        ranking_score = hit.get("_rankingScore") or 0
+        try:
+            semantic_score = float(ranking_score)
+        except (TypeError, ValueError):
+            semantic_score = 0.0
+        score = lexical_score + semantic_score + (item.importance_score / 1000)
+        if score <= 0 and not _semantic_enabled():
             continue
         contexts.append(RagContext(chunk=None, item=item, text=text, score=score))
     return sorted(contexts, key=lambda context: context.score, reverse=True)[:limit]

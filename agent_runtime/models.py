@@ -193,6 +193,8 @@ class ContentChunk(TimeStampedModel):
     chunk_index = models.PositiveIntegerField()
     text = models.TextField()
     search_document_id = models.CharField(max_length=80, unique=True)
+    embedding_fingerprint = models.CharField(max_length=64, blank=True)
+    embedding_version = models.CharField(max_length=120, blank=True)
 
     class Meta:
         ordering = ["content_item_id", "chunk_index"]
