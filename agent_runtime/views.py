@@ -8,6 +8,7 @@ from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.core.cache import cache
+from django.db import connection
 from django.db.models import Count, Max, Sum
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
@@ -287,6 +288,39 @@ def healthz(request):
         "last_crawl_success_at": last_crawl_success_at.isoformat() if last_crawl_success_at else None,
     }
     return JsonResponse(payload)
+
+
+@require_GET
+def readyz(request):
+    try:
+        connection.ensure_connection()
+        cache.set("readiness:probe", "ok", timeout=5)
+        if cache.get("readiness:probe") != "ok":
+            raise RuntimeError("cache probe failed")
+    except Exception:
+        return JsonResponse({"ok": False}, status=503)
+    return JsonResponse({"ok": True})
+
+
+@require_GET
+def internal_metrics(request):
+    remote_addr = request.META.get("REMOTE_ADDR", "")
+    if remote_addr not in {"127.0.0.1", "::1"}:
+        return HttpResponse(status=404)
+    published_items = ContentItem.objects.filter(status=ContentItem.Status.PUBLISHED, is_public=True).count()
+    open_failures = CrawlFailure.objects.filter(resolved_at__isnull=True).count()
+    lines = [
+        "# HELP hys_published_items Number of public content items.",
+        "# TYPE hys_published_items gauge",
+        f"hys_published_items {published_items}",
+        "# HELP hys_rag_chunks Number of indexed RAG chunks.",
+        "# TYPE hys_rag_chunks gauge",
+        f"hys_rag_chunks {ContentChunk.objects.count()}",
+        "# HELP hys_open_crawl_failures Number of unresolved crawl failures.",
+        "# TYPE hys_open_crawl_failures gauge",
+        f"hys_open_crawl_failures {open_failures}",
+    ]
+    return HttpResponse("\n".join(lines) + "\n", content_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @require_POST

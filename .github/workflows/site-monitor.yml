@@ -1,0 +1,27 @@
+name: Public Site Monitor
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check public HTTPS routes
+        run: |
+          set -euo pipefail
+          for path in / /healthz /research/ /ask/ /agent/ /sitemap-index.xml /robots.txt; do
+            curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "https://schoolsearchzzychen.online${path}" -o /dev/null
+          done
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 https://www.schoolsearchzzychen.online/ -o /dev/null
+      - name: Require a certificate valid for at least 21 days
+        run: |
+          set -euo pipefail
+          echo | openssl s_client -connect schoolsearchzzychen.online:443 -servername schoolsearchzzychen.online 2>/dev/null \
+            | openssl x509 -noout -checkend 1814400

@@ -22,4 +22,6 @@ urlpatterns = [
     path("ask/stream/", views.ask_stream, name="ask_stream"),
     path("agent/", views.agent_dashboard, name="agent_dashboard"),
     path("healthz", views.healthz, name="healthz"),
+    path("readyz", views.readyz, name="readyz"),
+    path("internal/metrics", views.internal_metrics, name="internal_metrics"),
 ]

@@ -71,6 +71,39 @@ def test_compose_publishes_https_and_mounts_certificates():
 
 
 @pytest.mark.django_db
+def test_readiness_and_local_metrics_report_runtime_state():
+    from django.test import Client
+
+    client = Client()
+
+    readiness = client.get("/readyz")
+    metrics = client.get("/internal/metrics", REMOTE_ADDR="127.0.0.1")
+    forbidden = client.get("/internal/metrics", REMOTE_ADDR="203.0.113.1")
+
+    assert readiness.status_code == 200
+    assert readiness.json()["ok"] is True
+    assert metrics.status_code == 200
+    assert "hys_published_items" in metrics.content.decode()
+    assert forbidden.status_code == 404
+
+
+def test_nginx_limits_internal_metrics_to_loopback():
+    nginx = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
+
+    assert "location = /internal/metrics" in nginx
+    assert "allow 127.0.0.1;" in nginx
+    assert "deny all;" in nginx
+
+
+def test_scheduled_public_site_probe_checks_https_and_certificate():
+    workflow = (ROOT / ".github" / "workflows" / "site-monitor.yml").read_text(encoding="utf-8")
+
+    assert "schedule:" in workflow
+    assert "schoolsearchzzychen.online" in workflow
+    assert "openssl x509 -noout -checkend" in workflow
+
+
+@pytest.mark.django_db
 def test_research_agent_smoke_reports_ready_runtime():
     output = StringIO()
 
