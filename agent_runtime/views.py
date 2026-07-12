@@ -14,7 +14,7 @@ from django.views.decorators.http import require_GET, require_POST
 from aggregator.models import AIUsageDaily, ContentItem, CrawlFailure, Source
 
 from .models import AgentRun, ContentChunk, LLMUsageEvent, RagMessage, RagSession, ToolInvocation
-from .research.runtime import cancel_research_run, create_research_run
+from .research.runtime import cancel_research_run, create_research_run, replay_research_run
 from .research.schemas import CreateResearchRunInput
 from .services import answer_question_events, new_session_key, sse_event
 from .tasks import execute_research_run_task
@@ -206,6 +206,24 @@ def cancel_research_run_view(request, run_id):
     cancelled = cancel_research_run(run)
     run.refresh_from_db()
     return JsonResponse({"run_id": str(run.public_id), "status": run.status, "cancelled": cancelled})
+
+
+@require_POST
+def replay_research_run_view(request, run_id):
+    source = AgentRun.objects.filter(public_id=run_id).first()
+    if source is None:
+        return JsonResponse({"error": "not found"}, status=404)
+    replay = replay_research_run(source)
+    execute_research_run_task.delay(str(replay.public_id))
+    return JsonResponse(
+        {
+            "run_id": str(replay.public_id),
+            "source_run_id": str(source.public_id),
+            "status": replay.status,
+            "events_url": f"/api/v1/research-runs/{replay.public_id}/events",
+        },
+        status=202,
+    )
 
 
 @require_GET

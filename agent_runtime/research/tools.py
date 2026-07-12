@@ -161,6 +161,14 @@ def _to_evidence(item: ContentItem) -> ContentEvidence:
 
 def _search_public_content(payload: SearchContentInput, _context: ToolContext) -> dict[str, Any]:
     queryset = ContentItem.objects.filter(status=ContentItem.Status.PUBLISHED, is_public=True).select_related("source")
+    if payload.source_names:
+        queryset = queryset.filter(source__name__in=payload.source_names)
+    if payload.category_slugs:
+        queryset = queryset.filter(category__slug__in=payload.category_slugs)
+    if payload.published_after:
+        queryset = queryset.filter(source_published_at__date__gte=payload.published_after)
+    if payload.published_before:
+        queryset = queryset.filter(source_published_at__date__lte=payload.published_before)
     terms = _query_terms(payload.query)
     if terms:
         predicate = Q()

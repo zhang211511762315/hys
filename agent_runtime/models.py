@@ -46,6 +46,13 @@ class AgentRun(TimeStampedModel):
     current_node = models.CharField(max_length=80, blank=True)
     graph_version = models.CharField(max_length=40, default="research-v1")
     prompt_version = models.CharField(max_length=40, default="research-v1")
+    replay_of = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="replays",
+    )
     total_cost_cny = models.DecimalField(max_digits=10, decimal_places=6, default=Decimal("0"))
     error_message = models.TextField(blank=True)
 

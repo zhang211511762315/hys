@@ -1,4 +1,5 @@
 import pytest
+from django.utils import timezone
 
 from aggregator.models import Category, ContentItem, Source
 
@@ -205,3 +206,32 @@ def test_research_graph_replans_once_after_verification_failure(research_item, s
     assert result["replan_count"] == 1
     assert result["verification"]["passed"] is True
     assert result["answer"]["citations"][0]["item_id"] == research_item.id
+
+
+@pytest.mark.django_db
+def test_search_tool_applies_source_category_and_date_filters(research_item):
+    from datetime import timedelta
+    from agent_runtime.research.tools import ToolContext, build_default_registry
+
+    research_item.source_published_at = timezone.now() - timedelta(days=2)
+    research_item.save(update_fields=["source_published_at", "updated_at"])
+    registry = build_default_registry()
+    result = registry.execute(
+        "search_public_content",
+        {
+            "query": "暑期实习",
+            "source_names": ["就业信息网"],
+            "category_slugs": ["jobs"],
+            "published_after": (timezone.now() - timedelta(days=7)).date().isoformat(),
+            "published_before": timezone.now().date().isoformat(),
+        },
+        ToolContext(),
+    )
+    excluded = registry.execute(
+        "search_public_content",
+        {"query": "暑期实习", "source_names": ["教务处"]},
+        ToolContext(),
+    )
+
+    assert result["item_ids"] == [research_item.id]
+    assert excluded["item_ids"] == []

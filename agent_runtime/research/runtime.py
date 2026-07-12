@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from time import monotonic
 from typing import Any
+import uuid
 
 from django.db import transaction
 from django.db.models import Max
@@ -45,6 +46,26 @@ def create_research_run(goal: str, client_request_id: str) -> tuple[AgentRun, bo
         if created:
             append_event(run, "run.created", {"status": AgentRun.Status.QUEUED})
     return run, created
+
+
+def replay_research_run(source: AgentRun) -> AgentRun:
+    with transaction.atomic():
+        replay = AgentRun.objects.create(
+            kind=source.kind,
+            client_request_id=f"replay-{uuid.uuid4()}",
+            goal=source.goal,
+            trigger="research_replay",
+            status=AgentRun.Status.QUEUED,
+            graph_version=source.graph_version,
+            prompt_version=source.prompt_version,
+            replay_of=source,
+        )
+        append_event(
+            replay,
+            "run.replayed",
+            {"source_run_id": str(source.public_id), "status": AgentRun.Status.QUEUED},
+        )
+    return replay
 
 
 def cancel_research_run(run: AgentRun) -> bool:

@@ -131,6 +131,32 @@ def test_retry_source_admin_tool_is_idempotent(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_admin_registry_can_diagnose_source_and_queue_reindex(monkeypatch):
+    from agent_runtime.research.admin_tools import build_admin_registry
+    from agent_runtime.research.tools import ToolContext
+
+    source = Source.objects.create(
+        name="诊断来源",
+        url="https://diagnose.example.edu/",
+        source_type=Source.SourceType.DEPARTMENT_SITE,
+        failure_count=3,
+    )
+    queued = []
+    monkeypatch.setattr("agent_runtime.tasks.index_content_item_rag.delay", queued.append)
+    registry = build_admin_registry()
+    context = ToolContext(actor_is_staff=True, run_id="admin-run")
+
+    diagnosis = registry.execute("diagnose_source", {"source_id": source.id}, context)
+    reindex = registry.execute("reindex_items", {"item_ids": [7, 7, 8]}, context)
+
+    assert diagnosis["source_id"] == source.id
+    assert diagnosis["failure_count"] == 3
+    assert diagnosis["healthy"] is False
+    assert reindex == {"queued_item_ids": [7, 8]}
+    assert queued == [7, 8]
+
+
+@pytest.mark.django_db
 def test_request_agent_repair_command_creates_pending_approval():
     from agent_runtime.models import AgentApproval
 

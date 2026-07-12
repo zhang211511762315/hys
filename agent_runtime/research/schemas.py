@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -31,6 +32,10 @@ class ContentEvidence(BaseModel):
 class SearchContentInput(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     limit: int = Field(default=8, ge=1, le=20)
+    source_names: list[str] = Field(default_factory=list, max_length=10)
+    category_slugs: list[str] = Field(default_factory=list, max_length=10)
+    published_after: date | None = None
+    published_before: date | None = None
 
 
 class SearchContentOutput(BaseModel):

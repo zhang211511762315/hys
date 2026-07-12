@@ -1,13 +1,16 @@
 # 中北信息聚合网站
 
-一个面向中北大学相关公开信息的 Agent 化聚合网站。系统支持后台维护信息源，抓取公开网页或手动添加的社媒/公众号具体链接，经过清洗、OCR、去重、AI 摘要/分类/标签后自动发布到公开页面，并提供基于已发布内容的 RAG 问答助手。
+一个面向中北大学公开信息的生产型研究 Agent。系统从采集、清洗、OCR、去重和发布延伸到可规划、可执行、可验证、可追踪的多步骤研究任务。
 
 ## Agent / RAG 能力
 
 - 采集 Agent：Celery 调度抓取任务，Agent runtime 记录抓取、抽取、去重、AI 分类、索引和自愈步骤。
 - RAG 问答：`/ask/` 基于已发布公开内容回答问题，展示引用来源、本轮 token、本轮费用和会话累计费用。
+- 研究 Agent：`/research/` 执行 Planning → Tool Calling → Verification → 有界 Replan，支持异步运行、SSE、取消、断线续传和 Replay。
+- 工具与安全：公开工具只读；后台诊断、重试和索引重建使用独立 staff registry 与持久化审批。
+- 可观测性：持久化运行状态、顺序事件、工具输入输出、版本、耗时、成本和异常。
 - 成本控制：DeepSeek 默认日预算 `0.1 CNY`、月预算 `3 CNY`，超预算自动转为零成本检索式回答。
-- 自动评测：`agent_eval --json` 固定问题集评估检索命中率、期望关键词命中率、引用覆盖和零成本评测结果，并记录到 Agent runtime。
+- 自动评测：120 条规划安全集和 40 条冻结检索集验证工具选择、越权、Recall@5 与 MRR，CI 默认零模型费用。
 - 低成本自愈：`agent_self_heal` 只执行确定性动作，如标记卡住任务、重试失败源、补建 RAG 索引，不调用 LLM、不写代码、不部署。
 - 安全工具接口：`run_mcp_server` 暴露本地 MCP 工具，用于查询公开内容、站点健康和自愈 dry-run。
 
@@ -16,8 +19,9 @@
 - `/`：真实校园信息流，面向普通用户，展示系统不是静态作品页。
 - `/agent/`：AI Agent 工程项目页，展示数据规模、工作流、运行记录、评测、成本控制和 MCP 工具边界。
 - `/ask/`：RAG 问答演示页，可用示例问题验证引用溯源、流式回答、token/费用统计和 fallback。
+- `/research/`：主研究 Agent 演示页，展示计划、逐步工具事件、流式结论和引用。
 
-简历建议写法见 `docs/resume/ai-agent-project.md`。推荐面试讲解顺序：业务问题 -> Agent 工作流 -> RAG 与引用 -> 成本控制 -> 自动评测与可观测 -> 上线约束。
+架构、API、部署验收和简历写法见 `docs/architecture/`、`docs/api/`、`docs/deployment/` 与 `docs/resume/`。
 
 ## 技术栈
 
@@ -48,6 +52,7 @@ docker compose up -d --build
 docker compose exec web python manage.py seed_sources
 docker compose exec web python manage.py createsuperuser
 docker compose exec web python manage.py rebuild_rag_index
+docker compose exec web python manage.py research_agent_eval --json
 ```
 
 2核2G 服务器建议保留 `worker --concurrency=1`，并给系统配置 swap。`.env` 中设置 `DEEPSEEK_API_KEY` 后，`AI_PROVIDER=deepseek` 会调用 DeepSeek；没有 Key 时可以改成 `AI_PROVIDER=rules`。本地模型可用 `AI_PROVIDER=ollama`，但不建议在 2G 服务器上常驻大模型。

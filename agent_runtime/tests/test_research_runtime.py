@@ -167,6 +167,31 @@ def test_cancel_research_run_marks_terminal_and_emits_event():
 
 
 @pytest.mark.django_db
+def test_replay_creates_new_run_with_frozen_versions(monkeypatch):
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import create_research_run
+
+    original, _ = create_research_run("查询就业通知", "replay-original-01")
+    original.graph_version = "research-v7"
+    original.prompt_version = "prompt-v3"
+    original.status = AgentRun.Status.SUCCEEDED
+    original.save(update_fields=["graph_version", "prompt_version", "status", "updated_at"])
+    queued = []
+    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", queued.append)
+
+    response = Client().post(f"/api/v1/research-runs/{original.public_id}/replay")
+
+    assert response.status_code == 202
+    replay = AgentRun.objects.exclude(id=original.id).get()
+    assert replay.goal == original.goal
+    assert replay.graph_version == "research-v7"
+    assert replay.prompt_version == "prompt-v3"
+    assert replay.replay_of_id == original.id
+    assert replay.events.get(event_type="run.replayed").payload_json["source_run_id"] == str(original.public_id)
+    assert queued == [str(replay.public_id)]
+
+
+@pytest.mark.django_db
 def test_session_memory_is_used_only_when_secure_mode_enabled(settings):
     from agent_runtime.models import RagMessage, RagSession
     from agent_runtime.research.memory import resolve_goal_with_memory
