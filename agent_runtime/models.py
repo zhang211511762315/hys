@@ -147,13 +147,14 @@ class ToolInvocation(TimeStampedModel):
     input_json = models.JSONField(default=dict, blank=True)
     output_json = models.JSONField(default=dict, blank=True)
     error_message = models.TextField(blank=True)
+    error_type = models.CharField(max_length=40, blank=True)
     duration_ms = models.PositiveIntegerField(default=0)
     idempotency_key = models.CharField(max_length=160, blank=True)
 
     class Meta:
         ordering = ["created_at"]
         constraints = [
-            models.UniqueConstraint(fields=["run", "step_id"], name="unique_agent_tool_step")
+            models.UniqueConstraint(fields=["run", "step_id", "attempt"], name="unique_agent_tool_step_attempt")
         ]
 
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import re
+import signal
+import threading
+import time
 from typing import Any, Callable
 
 from django.db.models import Q
@@ -31,6 +34,14 @@ class RiskLevel(StrEnum):
 class ToolPermission(StrEnum):
     PUBLIC = "public"
     STAFF = "staff"
+
+
+class ToolExecutionError(RuntimeError):
+    def __init__(self, tool_name: str, attempt: int, error_type: str, message: str):
+        super().__init__(message)
+        self.tool_name = tool_name
+        self.attempt = attempt
+        self.error_type = error_type
 
 
 @dataclass(frozen=True)
@@ -69,12 +80,110 @@ class ToolRegistry:
             raise KeyError(f"unknown tool: {name}") from exc
 
     def execute(self, name: str, payload: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        return self.execute_with_policy(name, payload, context)
+
+    def execute_with_policy(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        context: ToolContext,
+        observer: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         spec = self.get(name)
         if spec.permission == ToolPermission.STAFF and not context.actor_is_staff:
             raise PermissionError(f"tool {name} requires staff permission")
-        validated_input = spec.input_model.model_validate(payload)
-        raw_output = spec.executor(validated_input, context)
-        return spec.output_model.model_validate(raw_output).model_dump(mode="json")
+        try:
+            validated_input = spec.input_model.model_validate(payload)
+        except Exception as exc:
+            raise ToolExecutionError(name, 1, "validation", str(exc)) from exc
+
+        max_attempts = 1 + (max(0, spec.max_retries) if spec.idempotent else 0)
+        last_error: ToolExecutionError | None = None
+        for attempt in range(1, max_attempts + 1):
+            started = time.monotonic()
+            _notify(observer, {"event": "started", "tool": name, "attempt": attempt})
+            try:
+                raw_output = _execute_with_timeout(spec, validated_input, context)
+                output = spec.output_model.model_validate(raw_output).model_dump(mode="json")
+                _notify(
+                    observer,
+                    {
+                        "event": "completed",
+                        "tool": name,
+                        "attempt": attempt,
+                        "duration_ms": _duration_ms(started),
+                        "output": output,
+                    },
+                )
+                return output
+            except ToolExecutionError as exc:
+                last_error = ToolExecutionError(name, attempt, exc.error_type, str(exc))
+            except Exception as exc:
+                last_error = ToolExecutionError(name, attempt, _error_type(exc), str(exc))
+
+            if attempt < max_attempts:
+                _notify(
+                    observer,
+                    {
+                        "event": "retrying",
+                        "tool": name,
+                        "attempt": attempt,
+                        "duration_ms": _duration_ms(started),
+                        "error_type": last_error.error_type,
+                    },
+                )
+                time.sleep(min(0.1 * (2 ** (attempt - 1)), 0.5))
+                continue
+            _notify(
+                observer,
+                {
+                    "event": "failed",
+                    "tool": name,
+                    "attempt": attempt,
+                    "duration_ms": _duration_ms(started),
+                    "error_type": last_error.error_type,
+                    "message": str(last_error),
+                },
+            )
+            raise last_error
+        raise ToolExecutionError(name, 1, "unknown", "tool execution did not start")
+
+
+def _execute_with_timeout(spec: ToolSpec, payload: BaseModel, context: ToolContext) -> BaseModel | dict[str, Any]:
+    if threading.current_thread() is not threading.main_thread():
+        return spec.executor(payload, context)
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def raise_timeout(_signum, _frame):
+        raise TimeoutError(f"tool {spec.name} exceeded {spec.timeout_seconds}s")
+
+    try:
+        signal.signal(signal.SIGALRM, raise_timeout)
+        signal.setitimer(signal.ITIMER_REAL, max(1, spec.timeout_seconds))
+        return spec.executor(payload, context)
+    except TimeoutError as exc:
+        raise ToolExecutionError(spec.name, 1, "timeout", str(exc)) from exc
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, int((time.monotonic() - started) * 1000))
+
+
+def _error_type(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, PermissionError):
+        return "permission"
+    return "execution"
+
+
+def _notify(observer: Callable[[dict[str, Any]], None] | None, event: dict[str, Any]) -> None:
+    if observer is not None:
+        observer(event)
 
 
 def build_default_registry() -> ToolRegistry:

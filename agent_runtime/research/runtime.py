@@ -98,32 +98,59 @@ def execute_research_run(run_id: int) -> dict[str, Any]:
                 on_delta=lambda text: append_event(run, "answer.delta", {"text": text}),
             )
 
-        result = build_research_graph(registry, answer_builder=answer_builder).invoke(
+        def plan_observer(plan: ResearchPlan) -> None:
+            append_event(run, "plan.created", {"task_type": plan.task_type, "step_count": len(plan.steps)})
+
+        def tool_event_observer(step, spec, event: dict[str, Any]) -> None:
+            attempt = int(event["attempt"])
+            defaults = {
+                "tool_name": step.tool,
+                "tool_version": spec.version,
+                "risk_level": spec.risk_level,
+                "permission": spec.permission,
+                "input_json": step.args,
+                "idempotency_key": f"{run.public_id}:{step.id}:{attempt}",
+            }
+            invocation, _ = ToolInvocation.objects.get_or_create(
+                run=run,
+                step_id=step.id,
+                attempt=attempt,
+                defaults={**defaults, "status": ToolInvocation.Status.RUNNING},
+            )
+            event_type = event["event"]
+            if event_type == "completed":
+                invocation.status = ToolInvocation.Status.SUCCEEDED
+                invocation.output_json = event.get("output", {})
+                invocation.duration_ms = int(event.get("duration_ms", 0))
+                invocation.error_type = ""
+                invocation.error_message = ""
+                invocation.save(update_fields=["status", "output_json", "duration_ms", "error_type", "error_message", "updated_at"])
+                append_event(run, "tool.completed", {"step_id": step.id, "tool": step.tool, "attempt": attempt})
+            elif event_type == "retrying":
+                invocation.status = ToolInvocation.Status.FAILED
+                invocation.duration_ms = int(event.get("duration_ms", 0))
+                invocation.error_type = event.get("error_type", "execution")
+                invocation.save(update_fields=["status", "duration_ms", "error_type", "updated_at"])
+                append_event(run, "tool.retrying", {"step_id": step.id, "tool": step.tool, "attempt": attempt})
+            elif event_type == "failed":
+                invocation.status = ToolInvocation.Status.FAILED
+                invocation.duration_ms = int(event.get("duration_ms", 0))
+                invocation.error_type = event.get("error_type", "execution")
+                invocation.error_message = event.get("message", "")[:2000]
+                invocation.save(update_fields=["status", "duration_ms", "error_type", "error_message", "updated_at"])
+                append_event(run, "tool.failed", {"step_id": step.id, "tool": step.tool, "attempt": attempt, "error_type": invocation.error_type})
+            elif event_type == "started":
+                append_event(run, "tool.started", {"step_id": step.id, "tool": step.tool, "attempt": attempt})
+
+        result = build_research_graph(
+            registry,
+            answer_builder=answer_builder,
+            plan_observer=plan_observer,
+            tool_event_observer=tool_event_observer,
+        ).invoke(
             {"goal": run.goal, "actor_is_staff": False}
         )
         plan = ResearchPlan.model_validate(result["plan"])
-        append_event(run, "plan.created", {"task_type": plan.task_type, "step_count": len(plan.steps)})
-
-        outputs = result.get("tool_outputs", {})
-        for step in plan.steps:
-            started = monotonic()
-            spec = registry.get(step.tool)
-            ToolInvocation.objects.update_or_create(
-                run=run,
-                step_id=step.id,
-                defaults={
-                    "tool_name": step.tool,
-                    "tool_version": spec.version,
-                    "risk_level": spec.risk_level,
-                    "permission": spec.permission,
-                    "status": ToolInvocation.Status.SUCCEEDED,
-                    "input_json": step.args,
-                    "output_json": outputs.get(step.id, {}),
-                    "duration_ms": max(0, int((monotonic() - started) * 1000)),
-                    "idempotency_key": f"{run.public_id}:{step.id}",
-                },
-            )
-            append_event(run, "tool.completed", {"step_id": step.id, "tool": step.tool})
 
         verification = result["verification"]
         append_event(

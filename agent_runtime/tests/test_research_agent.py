@@ -120,6 +120,50 @@ def test_public_actor_cannot_execute_admin_write_tool():
         registry.execute("retry_source", {}, ToolContext(actor_is_staff=False))
 
 
+def test_idempotent_tool_retries_once_and_emits_attempt_events():
+    from pydantic import BaseModel
+
+    from agent_runtime.research.tools import RiskLevel, ToolContext, ToolPermission, ToolRegistry, ToolSpec
+
+    class EmptyInput(BaseModel):
+        pass
+
+    class Result(BaseModel):
+        ok: bool
+
+    attempts = []
+    events = []
+
+    def flaky_executor(_payload, _context):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise TimeoutError("temporary timeout")
+        return {"ok": True}
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="flaky_search",
+            version="1",
+            input_model=EmptyInput,
+            output_model=Result,
+            risk_level=RiskLevel.LOW,
+            permission=ToolPermission.PUBLIC,
+            timeout_seconds=1,
+            max_retries=1,
+            idempotent=True,
+            executor=flaky_executor,
+        )
+    )
+
+    result = registry.execute_with_policy("flaky_search", {}, ToolContext(), observer=events.append)
+
+    assert result == {"ok": True}
+    assert len(attempts) == 2
+    assert [event["event"] for event in events] == ["started", "retrying", "started", "completed"]
+    assert events[-1]["attempt"] == 2
+
+
 @pytest.fixture
 def research_item():
     source = Source.objects.create(

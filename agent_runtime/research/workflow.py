@@ -32,11 +32,15 @@ def _resolve_path(outputs: dict[str, dict[str, Any]], path: str) -> Any:
 def build_research_graph(
     registry: ToolRegistry | None = None,
     answer_builder: Callable[[ResearchGraphState, list[dict], dict[str, dict[str, Any]]], dict] | None = None,
+    plan_observer: Callable[[ResearchPlan], None] | None = None,
+    tool_event_observer: Callable[[Any, Any, dict[str, Any]], None] | None = None,
 ):
     registry = registry or build_default_registry()
 
     def plan_node(state: ResearchGraphState) -> ResearchGraphState:
         plan = build_hybrid_plan(state["goal"])
+        if plan_observer is not None:
+            plan_observer(plan)
         return {**state, "plan": plan.model_dump(mode="json"), "status": "planning"}
 
     def execute_node(state: ResearchGraphState) -> ResearchGraphState:
@@ -48,7 +52,17 @@ def build_research_graph(
             payload = dict(step.args)
             for field, path in step.input_from.items():
                 payload[field] = _resolve_path(outputs, path)
-            outputs[step.id] = registry.execute(step.tool, payload, context)
+            spec = registry.get(step.tool)
+            outputs[step.id] = registry.execute_with_policy(
+                step.tool,
+                payload,
+                context,
+                observer=(
+                    (lambda event, current_step=step, current_spec=spec: tool_event_observer(current_step, current_spec, event))
+                    if tool_event_observer is not None
+                    else None
+                ),
+            )
             executed_tools.append(step.tool)
         return {
             **state,

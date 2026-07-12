@@ -72,6 +72,22 @@ def test_execute_research_run_persists_trace_and_terminal_state(deadline_item, s
 
 
 @pytest.mark.django_db
+def test_research_runtime_persists_tool_attempt_events(deadline_item, settings):
+    settings.MEILISEARCH_URL = ""
+    from agent_runtime.models import ToolInvocation
+    from agent_runtime.research.runtime import create_research_run, execute_research_run
+
+    run, _ = create_research_run("整理创新竞赛报名截止时间", "attempt-trace-001")
+    execute_research_run(run.id)
+
+    invocations = list(ToolInvocation.objects.filter(run=run).order_by("step_id", "attempt"))
+    assert invocations
+    assert all(invocation.attempt == 1 for invocation in invocations)
+    assert all(invocation.duration_ms >= 0 for invocation in invocations)
+    assert set(run.events.values_list("event_type", flat=True)) >= {"tool.started", "tool.completed"}
+
+
+@pytest.mark.django_db
 def test_research_run_api_enqueues_once_for_same_client_request(monkeypatch):
     from agent_runtime.models import AgentRun
 
