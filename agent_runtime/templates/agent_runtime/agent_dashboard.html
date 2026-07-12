@@ -29,6 +29,17 @@
   <div class="metric">工具延迟 P95<strong>{{ tool_latency_p95_ms }} ms</strong></div>
 </section>
 
+<section class="item">
+  <h2>数据新鲜度</h2>
+  <p>最新公开内容：<strong>{{ latest_public_item_at|date:"Y-m-d H:i"|default:"暂无" }}</strong></p>
+  <p>最后成功抓取：<strong>{{ last_crawl_success_at|date:"Y-m-d H:i"|default:"暂无" }}</strong></p>
+  <p class="usage-line">
+    失败分类：永久失败 {{ failure_breakdown.permanent|default:0 }} ·
+    临时失败 {{ failure_breakdown.transient|default:0 }} ·
+    网络失败 {{ failure_breakdown.network|default:0 }}
+  </p>
+</section>
+
 <section class="workflow" aria-label="Agent 工作流">
   <div class="workflow-step">
     <strong>1. 采集调度</strong>

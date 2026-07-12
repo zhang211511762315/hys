@@ -276,3 +276,28 @@ def test_agent_dashboard_displays_research_latency_percentiles():
     assert ">20 ms<" in html
     assert "工具延迟 P95" in html
     assert ">100 ms<" in html
+
+
+@pytest.mark.django_db
+def test_agent_dashboard_displays_freshness_and_failure_breakdown():
+    from aggregator.models import CrawlFailure, CrawlJob, Source
+
+    source = Source.objects.create(
+        name="失败统计来源",
+        url="https://failure-dashboard.example.edu/",
+        source_type=Source.SourceType.DEPARTMENT_SITE,
+        last_success_at=timezone.datetime(2026, 7, 12, 8, 0, tzinfo=timezone.get_current_timezone()),
+    )
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    CrawlFailure.objects.create(
+        crawl_job=job,
+        source=source,
+        url=source.url,
+        failure_class=CrawlFailure.FailureClass.PERMANENT,
+    )
+
+    html = Client().get("/agent/").content.decode()
+
+    assert "数据新鲜度" in html
+    assert "永久失败" in html
+    assert "最后成功抓取" in html

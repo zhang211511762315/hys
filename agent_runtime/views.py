@@ -64,10 +64,14 @@ def research(request):
     return render(request, "agent_runtime/research.html")
 
 
-@require_GET
+@require_POST
 async def ask_stream(request):
-    question = request.GET.get("q", "").strip()
-    session_key = request.GET.get("session", "").strip() or None
+    try:
+        payload = json.loads(request.body or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    question = str(payload.get("question", "")).strip()
+    session_key = str(payload.get("session", "")).strip() or None
     if not question:
         return JsonResponse({"error": "missing question"}, status=400)
 
@@ -122,6 +126,17 @@ def agent_dashboard(request):
         .order_by("duration_ms")
         .values_list("duration_ms", flat=True)[:5000]
     )
+    latest_public_item_at = ContentItem.objects.filter(
+        status=ContentItem.Status.PUBLISHED,
+        is_public=True,
+    ).aggregate(value=Max("source_published_at"))["value"]
+    last_crawl_success_at = Source.objects.aggregate(value=Max("last_success_at"))["value"]
+    failure_breakdown = dict(
+        CrawlFailure.objects.filter(resolved_at__isnull=True)
+        .values("failure_class")
+        .annotate(count=Count("id"))
+        .values_list("failure_class", "count")
+    )
     open_failure_count = CrawlFailure.objects.filter(resolved_at__isnull=True).count()
     latest_eval_metrics = _display_eval_metrics(latest_eval.metrics_json if latest_eval else {})
     return render(
@@ -145,6 +160,9 @@ def agent_dashboard(request):
             "monthly_budget_cny": settings.DEEPSEEK_MONTHLY_BUDGET_CNY,
             "tool_latency_p50_ms": _percentile(tool_durations, 0.50),
             "tool_latency_p95_ms": _percentile(tool_durations, 0.95),
+            "latest_public_item_at": latest_public_item_at,
+            "last_crawl_success_at": last_crawl_success_at,
+            "failure_breakdown": failure_breakdown,
         },
     )
 

@@ -174,6 +174,15 @@ def test_ask_page_renders_demo_questions():
 
 
 @pytest.mark.django_db
+def test_ask_page_posts_question_without_query_string():
+    html = Client().get("/ask/").content.decode()
+
+    assert 'method: "POST"' in html
+    assert 'fetch("/ask/stream/"' in html
+    assert "?q=" not in html
+
+
+@pytest.mark.django_db
 def test_ask_page_renders_only_current_session_history():
     current_session = RagSession.objects.create(
         session_key="current-session",
