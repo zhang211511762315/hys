@@ -164,3 +164,21 @@ Result: `2 passed in 1.84s`.
 
 - Replaced the legacy NULL backfill save with `UPDATE ... WHERE request_id IS NULL`, then refreshes the run from the database. Exactly one retry can set the previously NULL value; competing retries read that winner. Existing non-null values remain untouched.
 - Green command: the same race-path test passed: `1 passed in 2.40s`.
+
+## MySQL current-read fix addendum
+
+### TDD evidence
+
+- Added a regression that simulates a losing conditional update and asserts that the caller performs a locking `select_for_update()` current read before returning the concurrent winner. This covers the MySQL Repeatable Read stale-snapshot branch rather than relying on a plain refresh.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_legacy_null_backfill_uses_a_locking_current_read_after_losing_race -q
+  ```
+
+  Result: `1 failed`; the previous implementation did not issue a locking current read.
+
+### Change and green verification
+
+- When the atomic NULL-only update loses, `create_research_run()` now reads the row with `select_for_update()` inside its existing transaction. It returns the persisted winner; only if the locked row is still NULL does it write the normalized ID while holding the lock.
+- Green command: the same locking-path test passed: `1 passed in 2.30s`.

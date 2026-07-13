@@ -149,6 +149,49 @@ def test_legacy_null_request_id_backfill_observes_the_concurrent_winner(monkeypa
 
 
 @pytest.mark.django_db
+def test_legacy_null_backfill_uses_a_locking_current_read_after_losing_race(monkeypatch):
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import create_research_run
+
+    legacy = AgentRun.objects.create(
+        kind=AgentRun.Kind.RAG,
+        client_request_id="mysql-snapshot-legacy-request-id",
+        request_id=None,
+    )
+    concurrent_winner = uuid.uuid4()
+    losing_retry_id = uuid.uuid4()
+    original_update = QuerySet.update
+    original_select_for_update = QuerySet.select_for_update
+    locking_reads = []
+
+    def race_before_compare_and_set(queryset, **kwargs):
+        if queryset.model is AgentRun and kwargs.get("request_id") == losing_retry_id:
+            original_update(
+                AgentRun.objects.filter(id=legacy.id, request_id__isnull=True),
+                request_id=concurrent_winner,
+            )
+        return original_update(queryset, **kwargs)
+
+    def observe_locking_read(queryset, *args, **kwargs):
+        if queryset.model is AgentRun:
+            locking_reads.append(True)
+        return original_select_for_update(queryset, *args, **kwargs)
+
+    monkeypatch.setattr(QuerySet, "update", race_before_compare_and_set)
+    monkeypatch.setattr(QuerySet, "select_for_update", observe_locking_read)
+
+    reused, created = create_research_run(
+        "MySQL 快照竞争重试",
+        legacy.client_request_id,
+        request_id=losing_retry_id,
+    )
+
+    assert created is False
+    assert locking_reads == [True]
+    assert reused.request_id == concurrent_winner
+
+
+@pytest.mark.django_db
 def test_execute_research_run_persists_trace_and_terminal_state(deadline_item, settings):
     settings.MEILISEARCH_URL = ""
     from agent_runtime.models import AgentRun, ToolInvocation
