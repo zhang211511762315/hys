@@ -1,19 +1,23 @@
 from datetime import timedelta
+from io import StringIO
 
 import httpx
 import pytest
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.utils import timezone
 
+from aggregator.services.failures import CrawlFailureAcknowledgementError, acknowledge_crawl_failures
 from aggregator.services.ai import AIAnalysis, DeepSeekAIProvider, RuleBasedAIProvider
 from aggregator.services.dedupe import content_fingerprint, is_near_duplicate, title_fingerprint
 from aggregator.services.employment import EmploymentAPIError, fetch_employment_documents
 from aggregator.services.extraction import ExtractionError, _parse_published_at, extract_document_from_html
 from aggregator.services.fetching import FetchResult, fetch_url
-from aggregator.services.pipeline import _combine_ocr_text, _record_crawl_failure, ingest_extracted_document, ingest_source
+from aggregator.services.pipeline import _combine_ocr_text, _link_document_to_item, _record_crawl_failure, ingest_extracted_document, ingest_source
 from aggregator.services.importance import score_importance
 from aggregator.services.scheduling import recommended_crawl_interval_minutes
 from aggregator.services.urls import normalize_url
-from aggregator.models import AIUsageDaily, Category, ContentItem, CrawlFailure, CrawlJob, Source
+from aggregator.models import AIUsageDaily, Attachment, Category, ContentItem, CrawlFailure, CrawlJob, RawDocument, Source
 
 
 def test_normalize_url_removes_tracking_and_fragment():
@@ -543,6 +547,135 @@ def test_record_crawl_failure_updates_existing_unresolved_url(settings):
     failure = failures.get()
     assert failure.retry_count == 1
     assert "second timeout" in failure.error_message
+
+
+@pytest.mark.django_db
+def test_attachment_url_over_model_limit_is_skipped_with_generic_job_warning():
+    source = Source.objects.create(name="附件来源", url="https://attachments.example.edu/", source_type=Source.SourceType.OFFICIAL_SITE)
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    item = ContentItem.objects.create(
+        source=source,
+        title="有附件的内容",
+        canonical_url="https://attachments.example.edu/item",
+        summary="摘要",
+        content_text="正文",
+    )
+    raw_document = RawDocument.objects.create(
+        source=source,
+        crawl_job=job,
+        url=item.canonical_url,
+        content_hash="a" * 64,
+    )
+    too_long_url = "https://attachments.example.edu/" + ("a" * 600) + ".png"
+    document = type("Document", (), {
+        "final_url": item.canonical_url,
+        "title": item.title,
+        "published_at": None,
+        "image_urls": [too_long_url],
+    })()
+
+    _link_document_to_item(source, item, raw_document, document, job)
+
+    job.refresh_from_db()
+    assert Attachment.objects.filter(content_item=item).count() == 0
+    assert "attachment URL exceeded the supported length and was skipped" in job.warning_message
+    assert too_long_url not in job.warning_message
+
+
+@pytest.mark.django_db
+def test_acknowledgement_requires_permanent_observed_http_404_or_410_and_resets_on_new_observation():
+    source = Source.objects.create(name="失败来源", url="https://failures.example.edu/", source_type=Source.SourceType.OFFICIAL_SITE)
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    url = "https://failures.example.edu/missing"
+    request = httpx.Request("GET", url)
+    response = httpx.Response(404, request=request)
+    _record_crawl_failure(job, source, url, httpx.HTTPStatusError("not found", request=request, response=response))
+    failure = CrawlFailure.objects.get()
+
+    dry_run = acknowledge_crawl_failures([failure.id], note="Confirmed by operator", confirmed_status=404, apply=False)
+    failure.refresh_from_db()
+    assert dry_run == [failure.id]
+    assert failure.acknowledged_at is None
+
+    acknowledge_crawl_failures([failure.id], note="Confirmed by operator", confirmed_status=404, apply=True)
+    failure.refresh_from_db()
+    assert failure.acknowledged_at is not None
+    assert failure.acknowledged_status == 404
+    assert failure.acknowledged_note == "Confirmed by operator"
+    with pytest.raises(CrawlFailureAcknowledgementError):
+        acknowledge_crawl_failures([failure.id], note="Confirmed again", confirmed_status=404, apply=True)
+
+    _record_crawl_failure(job, source, url, httpx.HTTPStatusError("still not found", request=request, response=response))
+    failure.refresh_from_db()
+    assert CrawlFailure.objects.filter(source=source, url=url, resolved_at__isnull=True).count() == 1
+    assert failure.acknowledged_at is None
+    assert failure.acknowledged_status is None
+    assert failure.acknowledged_note == ""
+
+
+@pytest.mark.django_db
+def test_acknowledgement_rejects_transient_network_and_non_http_permanent_failures():
+    source = Source.objects.create(name="拒绝确认来源", url="https://reject.example.edu/", source_type=Source.SourceType.OFFICIAL_SITE)
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    _record_crawl_failure(job, source, "https://reject.example.edu/timeout", httpx.ReadTimeout("timed out"))
+    _record_crawl_failure(job, source, "https://reject.example.edu/expired", ExtractionError("page is missing or expired"))
+
+    for failure in CrawlFailure.objects.order_by("id"):
+        with pytest.raises(CrawlFailureAcknowledgementError):
+            acknowledge_crawl_failures([failure.id], note="Confirmed by operator", confirmed_status=404, apply=True)
+        failure.refresh_from_db()
+        assert failure.acknowledged_at is None
+
+
+@pytest.mark.django_db
+def test_acknowledgement_command_validates_all_ids_before_applying_any_change():
+    source = Source.objects.create(name="命令来源", url="https://command.example.edu/", source_type=Source.SourceType.OFFICIAL_SITE)
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    request = httpx.Request("GET", source.url)
+    response = httpx.Response(410, request=request)
+    _record_crawl_failure(job, source, source.url, httpx.HTTPStatusError("gone", request=request, response=response))
+    eligible = CrawlFailure.objects.get()
+    transient = CrawlFailure.objects.create(
+        crawl_job=job, source=source, url="https://command.example.edu/timeout", failure_class=CrawlFailure.FailureClass.TRANSIENT
+    )
+
+    with pytest.raises(CommandError):
+        call_command(
+            "acknowledge_crawl_failures",
+            "--failure-id", str(eligible.id),
+            "--failure-id", str(transient.id),
+            "--confirmed-status", "410",
+            "--note", "Confirmed by operator",
+            "--apply",
+        )
+    eligible.refresh_from_db()
+    assert eligible.acknowledged_at is None
+
+    output = StringIO()
+    call_command(
+        "acknowledge_crawl_failures",
+        "--failure-id", str(eligible.id),
+        "--confirmed-status", "410",
+        "--note", "Confirmed by operator",
+        stdout=output,
+    )
+    eligible.refresh_from_db()
+    assert "dry-run" in output.getvalue()
+    assert str(eligible.id) in output.getvalue()
+    assert source.url not in output.getvalue()
+    assert eligible.acknowledged_at is None
+    transient.refresh_from_db()
+    assert transient.acknowledged_at is None
+
+    call_command(
+        "acknowledge_crawl_failures",
+        "--failure-id", str(eligible.id),
+        "--confirmed-status", "410",
+        "--note", "Confirmed by operator",
+        "--apply",
+    )
+    eligible.refresh_from_db()
+    assert eligible.acknowledged_at is not None
 
 
 def test_expired_pages_raise_extraction_error():

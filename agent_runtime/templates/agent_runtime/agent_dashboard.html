@@ -24,7 +24,7 @@
   <div class="metric">信息源<strong>{{ source_count }}</strong></div>
   <div class="metric">公开内容<strong>{{ published_count }}</strong></div>
   <div class="metric">RAG 知识块<strong>{{ chunk_count }}</strong></div>
-  <div class="metric">待重试 URL<strong>{{ retry_queue_count }}</strong></div>
+  <div class="metric">待处理失败<strong>{{ retry_queue_count }}</strong></div>
   <div class="metric">工具延迟 P50<strong>{{ tool_latency_p50_ms }} ms</strong></div>
   <div class="metric">工具延迟 P95<strong>{{ tool_latency_p95_ms }} ms</strong></div>
 </section>
@@ -34,7 +34,8 @@
   <p>最新公开内容：<strong>{{ latest_public_item_at|date:"Y-m-d H:i"|default:"暂无" }}</strong></p>
   <p>最后成功抓取：<strong>{{ last_crawl_success_at|date:"Y-m-d H:i"|default:"暂无" }}</strong></p>
   <p class="usage-line">
-    失败分类：永久失败 {{ failure_breakdown.permanent|default:0 }} ·
+    待处理失败 {{ actionable_failure_count }} · 已确认永久失败 {{ acknowledged_permanent_failure_count }}<br>
+    待处理分类：永久失败 {{ failure_breakdown.permanent|default:0 }} ·
     临时失败 {{ failure_breakdown.transient|default:0 }} ·
     网络失败 {{ failure_breakdown.network|default:0 }}
   </p>

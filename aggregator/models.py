@@ -196,11 +196,37 @@ class CrawlFailure(TimeStampedModel):
     next_retry_at = models.DateTimeField(null=True, blank=True)
     permanent = models.BooleanField(default=False)
     resolved_at = models.DateTimeField(null=True, blank=True)
+    http_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledged_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    acknowledged_note = models.TextField(blank=True)
 
     class Meta:
         ordering = ["-created_at"]
         verbose_name = "抓取失败URL"
         verbose_name_plural = "抓取失败URL"
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        acknowledged_at__isnull=True,
+                        acknowledged_status__isnull=True,
+                        acknowledged_note="",
+                    )
+                    | (
+                        models.Q(
+                            acknowledged_at__isnull=False,
+                            acknowledged_status__in=[404, 410],
+                            failure_class="permanent",
+                            permanent=True,
+                        )
+                        & models.Q(http_status=models.F("acknowledged_status"))
+                        & ~models.Q(acknowledged_note="")
+                    )
+                ),
+                name="crawlfailure_acknowledgement_valid",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.source} - {self.url}"

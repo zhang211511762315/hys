@@ -672,3 +672,31 @@ def test_agent_dashboard_displays_freshness_and_failure_breakdown():
     assert "数据新鲜度" in html
     assert "永久失败" in html
     assert "最后成功抓取" in html
+
+
+@pytest.mark.django_db
+def test_agent_dashboard_separates_actionable_and_acknowledged_permanent_failures():
+    from aggregator.models import CrawlFailure, CrawlJob, Source
+
+    source = Source.objects.create(
+        name="已确认展示来源",
+        url="https://dashboard-acknowledged.example.edu/",
+        source_type=Source.SourceType.DEPARTMENT_SITE,
+    )
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    CrawlFailure.objects.create(
+        crawl_job=job,
+        source=source,
+        url=source.url,
+        failure_class=CrawlFailure.FailureClass.PERMANENT,
+        permanent=True,
+        http_status=410,
+        acknowledged_at=timezone.now(),
+        acknowledged_status=410,
+        acknowledged_note="Confirmed by operator",
+    )
+
+    html = Client().get("/agent/").content.decode()
+
+    assert "待处理失败 0" in html
+    assert "已确认永久失败 1" in html

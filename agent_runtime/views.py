@@ -298,13 +298,22 @@ def agent_dashboard(request):
         is_public=True,
     ).aggregate(value=Max("source_published_at"))["value"]
     last_crawl_success_at = Source.objects.aggregate(value=Max("last_success_at"))["value"]
+    actionable_failures = CrawlFailure.objects.filter(resolved_at__isnull=True, acknowledged_at__isnull=True)
     failure_breakdown = dict(
-        CrawlFailure.objects.filter(resolved_at__isnull=True)
+        actionable_failures
         .values("failure_class")
         .annotate(count=Count("id"))
         .values_list("failure_class", "count")
     )
     open_failure_count = CrawlFailure.objects.filter(resolved_at__isnull=True).count()
+    actionable_failure_count = actionable_failures.count()
+    acknowledged_permanent_failure_count = CrawlFailure.objects.filter(
+        resolved_at__isnull=True,
+        acknowledged_at__isnull=False,
+        failure_class=CrawlFailure.FailureClass.PERMANENT,
+        permanent=True,
+        acknowledged_status__in=[404, 410],
+    ).count()
     latest_eval_metrics = _display_eval_metrics(latest_eval.metrics_json if latest_eval else {})
     return render(
         request,
@@ -313,8 +322,10 @@ def agent_dashboard(request):
             "source_count": Source.objects.count(),
             "published_count": ContentItem.objects.filter(status=ContentItem.Status.PUBLISHED, is_public=True).count(),
             "chunk_count": ContentChunk.objects.count(),
-            "retry_queue_count": open_failure_count,
+            "retry_queue_count": actionable_failure_count,
             "open_failure_count": open_failure_count,
+            "actionable_failure_count": actionable_failure_count,
+            "acknowledged_permanent_failure_count": acknowledged_permanent_failure_count,
             "usage_today": usage_today,
             "usage_total": usage_total,
             "runs_by_kind": runs_by_kind,
@@ -344,10 +355,18 @@ def healthz(request):
     last_crawl_success_at = Source.objects.aggregate(value=Max("last_success_at"))["value"]
     now = timezone.now()
     open_failures = CrawlFailure.objects.filter(resolved_at__isnull=True).count()
+    actionable_failures = CrawlFailure.objects.filter(resolved_at__isnull=True, acknowledged_at__isnull=True).count()
+    acknowledged_permanent_failures = CrawlFailure.objects.filter(
+        resolved_at__isnull=True,
+        acknowledged_at__isnull=False,
+        failure_class=CrawlFailure.FailureClass.PERMANENT,
+        permanent=True,
+        acknowledged_status__in=[404, 410],
+    ).count()
     alerts = []
     if last_crawl_success_at is None or last_crawl_success_at < now - timezone.timedelta(hours=settings.SOURCE_FRESHNESS_HOURS):
         alerts.append("crawl_stale")
-    if open_failures > settings.SOURCE_OPEN_FAILURE_THRESHOLD:
+    if actionable_failures > settings.SOURCE_OPEN_FAILURE_THRESHOLD:
         alerts.append("open_failures")
     payload = {
         "ok": True,
@@ -355,6 +374,8 @@ def healthz(request):
         "published_items": ContentItem.objects.filter(status=ContentItem.Status.PUBLISHED, is_public=True).count(),
         "rag_chunks": ContentChunk.objects.count(),
         "open_failures": open_failures,
+        "actionable_failures": actionable_failures,
+        "acknowledged_permanent_failures": acknowledged_permanent_failures,
         "latest_public_item_at": latest_public_item_at.isoformat() if latest_public_item_at else None,
         "last_crawl_success_at": last_crawl_success_at.isoformat() if last_crawl_success_at else None,
         "source_health_ok": not alerts,
@@ -383,6 +404,14 @@ def internal_metrics(request):
         return HttpResponse(status=404)
     published_items = ContentItem.objects.filter(status=ContentItem.Status.PUBLISHED, is_public=True).count()
     open_failures = CrawlFailure.objects.filter(resolved_at__isnull=True).count()
+    actionable_failures = CrawlFailure.objects.filter(resolved_at__isnull=True, acknowledged_at__isnull=True).count()
+    acknowledged_permanent_failures = CrawlFailure.objects.filter(
+        resolved_at__isnull=True,
+        acknowledged_at__isnull=False,
+        failure_class=CrawlFailure.FailureClass.PERMANENT,
+        permanent=True,
+        acknowledged_status__in=[404, 410],
+    ).count()
     lines = [
         "# HELP hys_published_items Number of public content items.",
         "# TYPE hys_published_items gauge",
@@ -393,6 +422,12 @@ def internal_metrics(request):
         "# HELP hys_open_crawl_failures Number of unresolved crawl failures.",
         "# TYPE hys_open_crawl_failures gauge",
         f"hys_open_crawl_failures {open_failures}",
+        "# HELP hys_actionable_crawl_failures Number of unresolved, unacknowledged crawl failures.",
+        "# TYPE hys_actionable_crawl_failures gauge",
+        f"hys_actionable_crawl_failures {actionable_failures}",
+        "# HELP hys_acknowledged_permanent_crawl_failures Number of acknowledged permanent HTTP failures.",
+        "# TYPE hys_acknowledged_permanent_crawl_failures gauge",
+        f"hys_acknowledged_permanent_crawl_failures {acknowledged_permanent_failures}",
     ]
     return HttpResponse("\n".join(lines) + "\n", content_type="text/plain; version=0.0.4; charset=utf-8")
 
