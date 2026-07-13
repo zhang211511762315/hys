@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.db.models.query import QuerySet
 from django.test import Client
 from django.test.utils import override_settings
@@ -192,6 +193,54 @@ def test_legacy_null_backfill_uses_a_locking_current_read_after_losing_race(monk
 
 
 @pytest.mark.django_db
+def test_duplicate_key_recovery_uses_a_locking_current_read_for_the_winner(monkeypatch):
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import create_research_run
+
+    winner = AgentRun.objects.create(
+        kind=AgentRun.Kind.RAG,
+        client_request_id="concurrent-first-submission",
+        request_id=uuid.uuid4(),
+    )
+    duplicate_attempted = []
+    locking_reads = []
+    original_select_for_update = QuerySet.select_for_update
+    original_first = QuerySet.first
+    hide_initial_lookup = [True]
+
+    def raise_duplicate_key(**_kwargs):
+        duplicate_attempted.append(True)
+        raise IntegrityError("duplicate client request id")
+
+    def observe_locking_read(queryset, *args, **kwargs):
+        if queryset.model is AgentRun:
+            locking_reads.append(True)
+        return original_select_for_update(queryset, *args, **kwargs)
+
+    def hide_winner_from_initial_lookup(queryset):
+        if queryset.model is AgentRun and hide_initial_lookup[0]:
+            hide_initial_lookup[0] = False
+            return None
+        return original_first(queryset)
+
+    monkeypatch.setattr(AgentRun.objects, "create", raise_duplicate_key)
+    monkeypatch.setattr(QuerySet, "select_for_update", observe_locking_read)
+    monkeypatch.setattr(QuerySet, "first", hide_winner_from_initial_lookup)
+
+    recovered, created = create_research_run(
+        "并发首提交恢复",
+        winner.client_request_id,
+        request_id=uuid.uuid4(),
+    )
+
+    assert duplicate_attempted == [True]
+    assert locking_reads == [True]
+    assert created is False
+    assert recovered.id == winner.id
+    assert recovered.request_id == winner.request_id
+
+
+@pytest.mark.django_db
 def test_execute_research_run_persists_trace_and_terminal_state(deadline_item, settings):
     settings.MEILISEARCH_URL = ""
     from agent_runtime.models import AgentRun, ToolInvocation
@@ -251,6 +300,34 @@ def test_research_run_api_enqueues_once_for_same_client_request(monkeypatch):
     assert second.status_code == 200
     assert first.json()["run_id"] == second.json()["run_id"]
     assert calls == [str(AgentRun.objects.get().public_id)]
+
+
+@pytest.mark.django_db
+def test_research_api_retry_backfills_legacy_null_request_correlation(monkeypatch):
+    from agent_runtime.models import AgentRun
+
+    legacy = AgentRun.objects.create(
+        kind=AgentRun.Kind.RAG,
+        client_request_id="legacy-http-retry-request",
+        goal="迁移前 HTTP 运行",
+        trigger="research_api",
+        status=AgentRun.Status.QUEUED,
+        request_id=None,
+    )
+    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    request_id = str(uuid.uuid4())
+
+    response = Client().post(
+        "/api/v1/research-runs",
+        data=json.dumps({"goal": "重试", "client_request_id": legacy.client_request_id}),
+        content_type="application/json",
+        HTTP_X_REQUEST_ID=request_id,
+    )
+
+    legacy.refresh_from_db()
+    assert response.status_code == 200
+    assert response.json()["run_id"] == str(legacy.public_id)
+    assert legacy.request_id == uuid.UUID(request_id)
 
 
 @pytest.mark.django_db

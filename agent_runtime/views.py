@@ -438,11 +438,9 @@ def research_runs(request):
         payload = CreateResearchRunInput.model_validate_json(request.body)
     except Exception:
         return JsonResponse({"error": "invalid request"}, status=400)
+    client_ip = _client_ip(request)
     existing = AgentRun.objects.filter(client_request_id=payload.client_request_id).first()
-    if existing is not None:
-        run, created = existing, False
-    else:
-        client_ip = _client_ip(request)
+    if existing is None:
         if not _consume_daily_research_quota(client_ip):
             return JsonResponse({"error": "daily limit exceeded"}, status=429)
         active_statuses = [
@@ -454,11 +452,12 @@ def research_runs(request):
         ]
         if AgentRun.objects.filter(trigger=f"research_api:{client_ip}", status__in=active_statuses).count() >= settings.RESEARCH_AGENT_CONCURRENT_LIMIT:
             return JsonResponse({"error": "concurrent limit exceeded"}, status=429)
-        run, created = create_research_run(
-            payload.goal,
-            payload.client_request_id,
-            request_id=request.request_id,
-        )
+    run, created = create_research_run(
+        payload.goal,
+        payload.client_request_id,
+        request_id=request.request_id,
+    )
+    if created:
         run.trigger = f"research_api:{client_ip}"
         run.save(update_fields=["trigger", "updated_at"])
     request.agent_run_id = str(run.public_id)

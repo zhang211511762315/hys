@@ -182,3 +182,27 @@ Result: `2 passed in 1.84s`.
 
 - When the atomic NULL-only update loses, `create_research_run()` now reads the row with `select_for_update()` inside its existing transaction. It returns the persisted winner; only if the locked row is still NULL does it write the normalized ID while holding the lock.
 - Green command: the same locking-path test passed: `1 passed in 2.30s`.
+
+## Final idempotency fixes addendum
+
+### TDD evidence
+
+- Added a request-level regression for a legacy HTTP idempotency row with `request_id=NULL`; the retry must go through `create_research_run()` and persist the request's validated UUID.
+- Added a duplicate-key recovery regression that hides an already committed winner from the initial lookup, injects the duplicate-key failure on the insert attempt, then verifies a locking current read returns that winner. This exercises the first-submission duplicate-recovery path rather than a sequential `get_or_create` hit.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_research_api_retry_backfills_legacy_null_request_correlation agent_runtime/tests/test_research_runtime.py::test_duplicate_key_recovery_uses_a_locking_current_read_for_the_winner -q
+  ```
+
+  Result: `2 failed`; the HTTP endpoint returned before runtime backfill, and the runtime did not attempt insert/duplicate-key recovery.
+
+### Changes
+
+- The HTTP endpoint still uses its preliminary lookup only to preserve quota/concurrency behavior, but always delegates idempotency resolution to `create_research_run()`. Duplicate responses remain `200` and new runs remain `202`.
+- `create_research_run()` now performs an initial create in a narrow transaction. On `IntegrityError`, it exits that transaction and uses a fresh locking current read in a new transaction to observe the concurrent winner under MySQL Repeatable Read. Legacy NULL backfill continues through the immutable conditional-update/locking path.
+
+### Green verification
+
+- New regression command: `2 passed in 2.06s`.
+- Focused research runtime suite: `/home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py -q` — `32 passed in 2.25s`.

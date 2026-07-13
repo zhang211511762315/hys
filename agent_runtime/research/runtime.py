@@ -4,7 +4,7 @@ from time import monotonic
 from typing import Any
 import uuid
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Max
 from django.utils import timezone
 
@@ -45,20 +45,39 @@ def create_research_run(
     if not normalized_id:
         raise ValueError("client_request_id is required")
     run_request_id = normalized_request_id(request_id)
-    with transaction.atomic():
-        run, created = AgentRun.objects.get_or_create(
-            client_request_id=normalized_id,
-            defaults={
-                "kind": AgentRun.Kind.RAG,
-                "goal": (goal or "").strip()[:1000],
-                "trigger": "research_api",
-                "status": AgentRun.Status.QUEUED,
-                "request_id": run_request_id,
-            },
-        )
-        if created:
+
+    existing = AgentRun.objects.filter(client_request_id=normalized_id).first()
+    if existing is not None:
+        return _reuse_research_run(existing, run_request_id), False
+
+    try:
+        with transaction.atomic():
+            run = AgentRun.objects.create(
+                client_request_id=normalized_id,
+                kind=AgentRun.Kind.RAG,
+                goal=(goal or "").strip()[:1000],
+                trigger="research_api",
+                status=AgentRun.Status.QUEUED,
+                request_id=run_request_id,
+            )
             append_event(run, "run.created", {"status": AgentRun.Status.QUEUED})
-        elif run.request_id is None:
+            return run, True
+    except IntegrityError:
+        pass
+
+    for _ in range(2):
+        with transaction.atomic():
+            try:
+                run = AgentRun.objects.select_for_update().get(client_request_id=normalized_id)
+            except AgentRun.DoesNotExist:
+                continue
+            return _reuse_research_run(run, run_request_id), False
+    raise RuntimeError("research run duplicate recovery failed")
+
+
+def _reuse_research_run(run: AgentRun, run_request_id: uuid.UUID) -> AgentRun:
+    with transaction.atomic():
+        if run.request_id is None:
             updated = AgentRun.objects.filter(id=run.id, request_id__isnull=True).update(
                 request_id=run_request_id,
                 updated_at=timezone.now(),
@@ -70,7 +89,7 @@ def create_research_run(
                 if run.request_id is None:
                     run.request_id = run_request_id
                     run.save(update_fields=["request_id", "updated_at"])
-    return run, created
+    return run
 
 
 def replay_research_run(
