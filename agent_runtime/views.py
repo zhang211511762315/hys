@@ -29,6 +29,7 @@ from .models import (
     ToolInvocation,
 )
 from .evaluation.runner import evaluate_promotion_gate
+from .evaluation.strategies import MULTI_AGENT_EXPERIMENTAL, SINGLE_AGENT
 from .research.runtime import cancel_research_run, create_research_run, replay_research_run
 from .research.schemas import CreateResearchRunInput
 from .services import answer_question_events, cleanup_expired_memory, new_session_key, save_explicit_memory, sse_event
@@ -506,22 +507,58 @@ def _latest_evalops_comparison() -> dict | None:
     if latest_run is None:
         return None
 
-    runs = {
-        run.strategy: run
-        for run in EvaluationRun.objects.filter(comparison_id=latest_run.comparison_id)
-    }
-    baseline = runs.get("single_agent")
-    candidate = runs.get("multi_agent_experimental")
-    if baseline is None or candidate is None:
-        return None
+    runs = list(
+        EvaluationRun.objects.filter(comparison_id=latest_run.comparison_id).order_by("id")
+    )
+    if len(runs) != 2:
+        return _not_ready_evalops_comparison(latest_run)
+
+    runs_by_strategy = {run.strategy: run for run in runs}
+    if (
+        len(runs_by_strategy) != 2
+        or set(runs_by_strategy) != {SINGLE_AGENT, MULTI_AGENT_EXPERIMENTAL}
+    ):
+        return _not_ready_evalops_comparison(latest_run)
+
+    baseline = runs_by_strategy[SINGLE_AGENT]
+    candidate = runs_by_strategy[MULTI_AGENT_EXPERIMENTAL]
+    if (
+        baseline.status != EvaluationRun.Status.SUCCEEDED
+        or candidate.status != EvaluationRun.Status.SUCCEEDED
+        or baseline.dataset_version != candidate.dataset_version
+        or baseline.mode != candidate.mode
+    ):
+        return _not_ready_evalops_comparison(latest_run)
 
     promotion = evaluate_promotion_gate(baseline.metrics_json or {}, candidate.metrics_json or {})
+    if {
+        "invalid_baseline_metrics",
+        "invalid_candidate_metrics",
+        "case_count_mismatch",
+    }.intersection(promotion["reasons"]):
+        return _not_ready_evalops_comparison(latest_run)
+
     return {
         "comparison_id": str(latest_run.comparison_id),
-        "dataset_version": candidate.dataset_version,
+        "dataset_version": baseline.dataset_version,
+        "ready": True,
         "promotion": promotion,
         "baseline": _display_evalops_strategy_metrics(baseline.metrics_json or {}),
         "candidate": _display_evalops_strategy_metrics(candidate.metrics_json or {}),
+    }
+
+
+def _not_ready_evalops_comparison(latest_run: EvaluationRun) -> dict:
+    return {
+        "comparison_id": str(latest_run.comparison_id),
+        "dataset_version": latest_run.dataset_version,
+        "ready": False,
+        "promotion": {
+            "status": "blocked",
+            "eligible": False,
+            "reasons": ["comparison_not_ready"],
+            "p95_latency_limit_ms": None,
+        },
     }
 
 

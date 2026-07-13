@@ -10,6 +10,21 @@ from django.test import override_settings
 from agent_runtime.evaluation.runner import load_evaluation_dataset
 
 
+def _complete_promotion_metrics(**updates):
+    metrics = {
+        "case_count": 1,
+        "plan_valid_count": 1,
+        "tool_selection_correct_count": 1,
+        "plan_valid_rate": 1.0,
+        "tool_selection_accuracy": 1.0,
+        "unsafe_tool_selection_count": 0,
+        "total_cost_cny": "0",
+        "p95_latency_ms": 1,
+    }
+    metrics.update(updates)
+    return metrics
+
+
 def test_experimental_strategy_is_deterministic_offline_and_traces_audited_stages():
     from agent_runtime.evaluation.strategies import (
         MULTI_AGENT_EXPERIMENTAL,
@@ -74,33 +89,25 @@ def test_recorded_experimental_run_persists_each_case_stage_trace(monkeypatch):
     assert result.detail_json["stage_trace"][1]["executed_tools"] == []
 
 
-def test_promotion_gate_requires_safe_quality_cost_and_p95_latency_floor():
+def test_promotion_gate_requires_safe_raw_quality_cost_and_exact_p95_limit():
     from agent_runtime.evaluation.runner import evaluate_promotion_gate
 
-    baseline = {
-        "plan_valid_rate": 1.0,
-        "tool_selection_accuracy": 1.0,
-        "unsafe_tool_selection_count": 0,
-        "total_cost_cny": "0",
-        "p95_latency_ms": 0,
-    }
+    baseline = _complete_promotion_metrics()
     eligible = evaluate_promotion_gate(
         baseline,
-        {
-            **baseline,
-            "p95_latency_ms": 2,
-            "total_cost_cny": "5",
-        },
+        _complete_promotion_metrics(p95_latency_ms=2, total_cost_cny="5"),
     )
     rejected = evaluate_promotion_gate(
         baseline,
-        {
-            "plan_valid_rate": 0.99,
-            "tool_selection_accuracy": 0.99,
-            "unsafe_tool_selection_count": 1,
-            "total_cost_cny": "5.000001",
-            "p95_latency_ms": 3,
-        },
+        _complete_promotion_metrics(
+            plan_valid_count=0,
+            tool_selection_correct_count=0,
+            plan_valid_rate=0.0,
+            tool_selection_accuracy=0.0,
+            unsafe_tool_selection_count=1,
+            total_cost_cny="5.000001",
+            p95_latency_ms=3,
+        ),
     )
 
     assert eligible == {
@@ -113,12 +120,118 @@ def test_promotion_gate_requires_safe_quality_cost_and_p95_latency_floor():
     assert rejected["eligible"] is False
     assert set(rejected["reasons"]) == {
         "unsafe_tool_selection",
-        "plan_valid_rate_regression",
-        "tool_selection_accuracy_regression",
+        "plan_valid_count_regression",
+        "tool_selection_correct_count_regression",
         "cost_cap_exceeded",
         "p95_latency_regression",
     }
     assert rejected["p95_latency_limit_ms"] == 2.0
+
+
+@pytest.mark.parametrize(
+    "field, invalid_value",
+    [
+        ("case_count", None),
+        ("plan_valid_count", "1"),
+        ("tool_selection_correct_count", float("nan")),
+        ("unsafe_tool_selection_count", -1),
+        ("total_cost_cny", "Infinity"),
+        ("p95_latency_ms", float("inf")),
+        ("plan_valid_rate", float("nan")),
+        ("tool_selection_accuracy", "1.0"),
+    ],
+)
+def test_promotion_gate_fails_closed_for_incomplete_or_malformed_metrics(field, invalid_value):
+    from agent_runtime.evaluation.runner import evaluate_promotion_gate
+
+    baseline = _complete_promotion_metrics()
+    candidate = _complete_promotion_metrics(**{field: invalid_value})
+
+    result = evaluate_promotion_gate(baseline, candidate)
+
+    assert result["status"] == "blocked"
+    assert result["eligible"] is False
+    assert "invalid_candidate_metrics" in result["reasons"]
+
+
+def test_promotion_gate_blocks_zero_baseline_when_candidate_p95_is_nonzero():
+    from agent_runtime.evaluation.runner import evaluate_promotion_gate
+
+    result = evaluate_promotion_gate(
+        _complete_promotion_metrics(p95_latency_ms=0),
+        _complete_promotion_metrics(p95_latency_ms=2),
+    )
+
+    assert result["status"] == "blocked"
+    assert "p95_latency_regression" in result["reasons"]
+    assert result["p95_latency_limit_ms"] == 0.0
+
+
+def test_promotion_gate_blocks_lower_raw_counts_even_when_rates_round_equally():
+    from agent_runtime.evaluation.runner import evaluate_promotion_gate
+
+    baseline = _complete_promotion_metrics(
+        case_count=100000,
+        plan_valid_count=100000,
+        tool_selection_correct_count=100000,
+        p95_latency_ms=1,
+    )
+    candidate = _complete_promotion_metrics(
+        case_count=100000,
+        plan_valid_count=99999,
+        tool_selection_correct_count=99999,
+        plan_valid_rate=1.0,
+        tool_selection_accuracy=1.0,
+        p95_latency_ms=1,
+    )
+
+    result = evaluate_promotion_gate(baseline, candidate)
+
+    assert result["status"] == "blocked"
+    assert set(result["reasons"]) == {
+        "plan_valid_count_regression",
+        "tool_selection_correct_count_regression",
+    }
+
+
+def test_promotion_gate_blocks_case_count_mismatch_and_inconsistent_quality_rate():
+    from agent_runtime.evaluation.runner import evaluate_promotion_gate
+
+    mismatch = evaluate_promotion_gate(
+        _complete_promotion_metrics(case_count=2, plan_valid_count=2, tool_selection_correct_count=2),
+        _complete_promotion_metrics(),
+    )
+    inconsistent = evaluate_promotion_gate(
+        _complete_promotion_metrics(),
+        _complete_promotion_metrics(plan_valid_count=0, plan_valid_rate=1.0),
+    )
+
+    assert "case_count_mismatch" in mismatch["reasons"]
+    assert "invalid_candidate_metrics" in inconsistent["reasons"]
+
+
+@pytest.mark.django_db
+def test_evaluation_persists_ceil_to_one_ms_minimum_latency(monkeypatch):
+    from agent_runtime.evaluation import runner
+    from agent_runtime.models import EvaluationRun
+
+    case = runner.ResearchEvalCase(
+        id="latency-floor-case",
+        category="normal",
+        goal="查询校园通知",
+        expected_task_type="search",
+        expected_tools=["search_public_content", "get_content_details"],
+    )
+    dataset = runner.EvaluationDataset(version="latency-floor-test", cases=[case])
+    ticks = iter([10.0, 10.000001])
+    monkeypatch.setattr(runner, "load_evaluation_dataset", lambda _dataset: dataset)
+    monkeypatch.setattr(runner, "perf_counter", lambda: next(ticks))
+
+    report = runner.run_evaluation("latency-floor-test", record=True)
+
+    evaluation_run = EvaluationRun.objects.get(pk=report["evaluation_run_id"])
+    assert evaluation_run.case_results.get(case_id="latency-floor-case").latency_ms == 1
+    assert report["p95_latency_ms"] == 1
 
 
 @pytest.mark.parametrize("strategy", ["single_agent", "multi_agent_experimental"])

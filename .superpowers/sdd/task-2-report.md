@@ -71,3 +71,31 @@ Each behavior was introduced by a focused failing test before its production imp
 - The new strategy module imports only the template planner and public-tool allowlist; it contains no registry construction, tool execution, network client, persistence, or write call.
 - Evaluation persistence is limited to the existing internal EvalOps models, which is required for comparison auditability.
 - The public dashboard intentionally omits the comparison UUID and detailed per-case data; Django admin remains the detailed-record surface.
+
+## Review-fix addendum
+
+### TDD evidence
+
+The review-regression coverage was run against the pre-fix implementation and failed as expected:
+
+- `test_promotion_gate_fails_closed_for_incomplete_or_malformed_metrics`: 8 failures
+- `test_promotion_gate_blocks_lower_raw_counts_even_when_rates_round_equally`: 1 failure
+- zero-baseline latency plus ceil/minimum latency collection: 2 failures
+- failed, incomplete, and duplicate dashboard comparisons: 3 failures
+
+After the implementation, the same focused checks passed (8 + 1 + 2 + 3 tests).
+
+### Changes
+
+- Fail closed on missing, malformed, non-finite, out-of-range, or internally inconsistent promotion metrics.
+- Persist raw quality counts, compare them with a matching case count, and retain rounded rates only for display.
+- Record latency as `max(1, ceil(milliseconds))`; remove the promotion-gate latency floor and reject invalid multipliers.
+- Show a dashboard candidate only for exactly one successful, compatible baseline/candidate pair; incomplete or malformed comparisons render as not ready.
+
+### Verification
+
+- `uv run --with-requirements requirements.txt python -m pytest -q agent_runtime/tests` — 103 passed
+- `uv run --with-requirements requirements.txt python -m pytest -q` — 179 passed
+- `uv run --with-requirements requirements.txt python manage.py check --settings=zhongbei_info.settings_test` — no issues
+- `uv run --with-requirements requirements.txt python manage.py makemigrations --check --dry-run --settings=zhongbei_info.settings_test` — no changes detected
+- `uv run --with-requirements requirements.txt python manage.py research_agent_eval --json --settings=zhongbei_info.settings_test` — completed offline with the new count metrics

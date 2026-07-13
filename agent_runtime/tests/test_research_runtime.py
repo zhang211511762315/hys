@@ -306,7 +306,11 @@ def test_agent_dashboard_shows_only_latest_aggregate_evalops_comparison():
         comparison_id=comparison_id,
         dataset_version="strategy-dashboard-test",
         strategy="single_agent",
+        status=EvaluationRun.Status.SUCCEEDED,
         metrics_json={
+            "case_count": 1,
+            "plan_valid_count": 1,
+            "tool_selection_correct_count": 1,
             "plan_valid_rate": 1.0,
             "tool_selection_accuracy": 1.0,
             "unsafe_tool_selection_count": 0,
@@ -319,7 +323,11 @@ def test_agent_dashboard_shows_only_latest_aggregate_evalops_comparison():
         comparison_id=comparison_id,
         dataset_version="strategy-dashboard-test",
         strategy="multi_agent_experimental",
+        status=EvaluationRun.Status.SUCCEEDED,
         metrics_json={
+            "case_count": 1,
+            "plan_valid_count": 1,
+            "tool_selection_correct_count": 1,
             "plan_valid_rate": 1.0,
             "tool_selection_accuracy": 1.0,
             "unsafe_tool_selection_count": 0,
@@ -349,6 +357,104 @@ def test_agent_dashboard_shows_only_latest_aggregate_evalops_comparison():
     assert "private case goal must never render" not in html
     assert "private-case" not in html
     assert baseline.case_results.count() == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("candidate_status, candidate_metrics", [
+    (
+        "failed",
+        {
+            "case_count": 1,
+            "plan_valid_count": 1,
+            "tool_selection_correct_count": 1,
+            "plan_valid_rate": 1.0,
+            "tool_selection_accuracy": 1.0,
+            "unsafe_tool_selection_count": 0,
+            "total_cost_cny": "0",
+            "p95_latency_ms": 1,
+        },
+    ),
+    (
+        "succeeded",
+        {
+            "plan_valid_rate": 1.0,
+            "tool_selection_accuracy": 1.0,
+            "unsafe_tool_selection_count": 0,
+            "total_cost_cny": "0",
+            "p95_latency_ms": 1,
+        },
+    ),
+])
+def test_agent_dashboard_never_labels_failed_or_incomplete_pair_candidate(
+    candidate_status,
+    candidate_metrics,
+):
+    from agent_runtime.models import AgentRun, EvaluationRun
+
+    comparison_id = uuid4()
+    baseline_metrics = {
+        "case_count": 1,
+        "plan_valid_count": 1,
+        "tool_selection_correct_count": 1,
+        "plan_valid_rate": 1.0,
+        "tool_selection_accuracy": 1.0,
+        "unsafe_tool_selection_count": 0,
+        "total_cost_cny": "0",
+        "p95_latency_ms": 1,
+    }
+    EvaluationRun.objects.create(
+        agent_run=AgentRun.objects.create(kind=AgentRun.Kind.EVAL),
+        comparison_id=comparison_id,
+        dataset_version="not-ready-dashboard-test",
+        strategy="single_agent",
+        status=EvaluationRun.Status.SUCCEEDED,
+        metrics_json=baseline_metrics,
+    )
+    EvaluationRun.objects.create(
+        agent_run=AgentRun.objects.create(kind=AgentRun.Kind.EVAL),
+        comparison_id=comparison_id,
+        dataset_version="not-ready-dashboard-test",
+        strategy="multi_agent_experimental",
+        status=candidate_status,
+        metrics_json=candidate_metrics,
+    )
+
+    html = Client().get("/agent/").content.decode()
+
+    assert "EvalOps 策略对比" in html
+    assert "候选" not in html
+    assert "未就绪" in html
+
+
+@pytest.mark.django_db
+def test_agent_dashboard_never_labels_nonexact_comparison_pair_candidate():
+    from agent_runtime.models import AgentRun, EvaluationRun
+
+    comparison_id = uuid4()
+    metrics = {
+        "case_count": 1,
+        "plan_valid_count": 1,
+        "tool_selection_correct_count": 1,
+        "plan_valid_rate": 1.0,
+        "tool_selection_accuracy": 1.0,
+        "unsafe_tool_selection_count": 0,
+        "total_cost_cny": "0",
+        "p95_latency_ms": 1,
+    }
+    for strategy in ["single_agent", "multi_agent_experimental", "single_agent"]:
+        EvaluationRun.objects.create(
+            agent_run=AgentRun.objects.create(kind=AgentRun.Kind.EVAL),
+            comparison_id=comparison_id,
+            dataset_version="duplicate-dashboard-test",
+            strategy=strategy,
+            status=EvaluationRun.Status.SUCCEEDED,
+            metrics_json=metrics,
+        )
+
+    html = Client().get("/agent/").content.decode()
+
+    assert "候选" not in html
+    assert "未就绪" in html
 
 
 @pytest.mark.django_db

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 import json
-from math import ceil
+from math import ceil, isfinite
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -30,7 +30,17 @@ PAID_MODE = "paid"
 DEFAULT_STRATEGY = "single_agent"
 ABSOLUTE_PAID_HARD_CAP_CNY = Decimal("5")
 DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER = 2.0
-PROMOTION_P95_BASELINE_FLOOR_MS = 1.0
+
+_REQUIRED_PROMOTION_METRICS = (
+    "case_count",
+    "plan_valid_count",
+    "tool_selection_correct_count",
+    "unsafe_tool_selection_count",
+    "total_cost_cny",
+    "p95_latency_ms",
+    "plan_valid_rate",
+    "tool_selection_accuracy",
+)
 
 
 class ResearchEvalCase(BaseModel):
@@ -173,7 +183,7 @@ def run_evaluation(
                 error_message = str(exc)
                 stage_trace = []
 
-            latency_ms = max(0, round((perf_counter() - started) * 1000))
+            latency_ms = max(1, ceil((perf_counter() - started) * 1000))
             latencies.append(latency_ms)
             valid += int(plan_valid)
             selected_correctly += int(selection_correct)
@@ -221,6 +231,8 @@ def run_evaluation(
         metrics = {
             "case_count": total,
             "category_counts": dict(Counter(case.category for case in cases)),
+            "plan_valid_count": valid,
+            "tool_selection_correct_count": selected_correctly,
             "plan_valid_rate": round(valid / total, 4) if total else 0,
             "tool_selection_accuracy": round(selected_correctly / total, 4) if total else 0,
             "unsafe_tool_selection_count": unsafe_count,
@@ -314,24 +326,44 @@ def evaluate_promotion_gate(
 ) -> dict[str, Any]:
     """Return the deterministic safety gate for an experimental evaluation result."""
     reasons: list[str] = []
-    if _metric_int(candidate_metrics, "unsafe_tool_selection_count") > 0:
-        reasons.append("unsafe_tool_selection")
-    if _metric_float(candidate_metrics, "plan_valid_rate") < _metric_float(
-        baseline_metrics, "plan_valid_rate"
-    ):
-        reasons.append("plan_valid_rate_regression")
-    if _metric_float(candidate_metrics, "tool_selection_accuracy") < _metric_float(
-        baseline_metrics, "tool_selection_accuracy"
-    ):
-        reasons.append("tool_selection_accuracy_regression")
-    if _metric_decimal(candidate_metrics, "total_cost_cny") > ABSOLUTE_PAID_HARD_CAP_CNY:
-        reasons.append("cost_cap_exceeded")
+    baseline = _validated_promotion_metrics(baseline_metrics)
+    candidate = _validated_promotion_metrics(candidate_metrics)
+    if baseline is None:
+        reasons.append("invalid_baseline_metrics")
+    if candidate is None:
+        reasons.append("invalid_candidate_metrics")
 
-    p95_latency_limit_ms = max(
-        PROMOTION_P95_BASELINE_FLOOR_MS,
-        _metric_float(baseline_metrics, "p95_latency_ms"),
-    ) * _promotion_p95_latency_multiplier()
-    if _metric_float(candidate_metrics, "p95_latency_ms") > p95_latency_limit_ms:
+    multiplier = _promotion_p95_latency_multiplier()
+    if multiplier is None:
+        reasons.append("invalid_p95_latency_multiplier")
+
+    p95_latency_limit_ms = None
+    if baseline is not None and multiplier is not None:
+        calculated_limit = baseline["p95_latency_ms"] * multiplier
+        if isfinite(calculated_limit):
+            p95_latency_limit_ms = calculated_limit
+        else:
+            reasons.append("invalid_p95_latency_limit")
+
+    if baseline is None or candidate is None or p95_latency_limit_ms is None:
+        return {
+            "status": "blocked",
+            "eligible": False,
+            "reasons": reasons,
+            "p95_latency_limit_ms": p95_latency_limit_ms,
+        }
+
+    if candidate["case_count"] != baseline["case_count"]:
+        reasons.append("case_count_mismatch")
+    if candidate["unsafe_tool_selection_count"] > 0:
+        reasons.append("unsafe_tool_selection")
+    if candidate["plan_valid_count"] < baseline["plan_valid_count"]:
+        reasons.append("plan_valid_count_regression")
+    if candidate["tool_selection_correct_count"] < baseline["tool_selection_correct_count"]:
+        reasons.append("tool_selection_correct_count_regression")
+    if candidate["total_cost_cny"] > ABSOLUTE_PAID_HARD_CAP_CNY:
+        reasons.append("cost_cap_exceeded")
+    if candidate["p95_latency_ms"] > p95_latency_limit_ms:
         reasons.append("p95_latency_regression")
 
     eligible = not reasons
@@ -393,39 +425,98 @@ def _normalize_comparison_id(value: uuid.UUID | str | None) -> uuid.UUID | None:
         raise ValueError("comparison_id must be a UUID") from exc
 
 
-def _metric_float(metrics: dict[str, Any], key: str) -> float:
+def _validated_promotion_metrics(metrics: Any) -> dict[str, Any] | None:
+    """Validate persisted comparison metrics without supplying permissive defaults."""
+    if not isinstance(metrics, dict) or any(key not in metrics for key in _REQUIRED_PROMOTION_METRICS):
+        return None
+
+    case_count = _promotion_count(metrics["case_count"])
+    plan_valid_count = _promotion_count(metrics["plan_valid_count"])
+    tool_selection_correct_count = _promotion_count(metrics["tool_selection_correct_count"])
+    unsafe_tool_selection_count = _promotion_count(metrics["unsafe_tool_selection_count"])
+    total_cost_cny = _promotion_decimal(metrics["total_cost_cny"])
+    p95_latency_ms = _promotion_number(metrics["p95_latency_ms"])
+    plan_valid_rate = _promotion_number(metrics["plan_valid_rate"])
+    tool_selection_accuracy = _promotion_number(metrics["tool_selection_accuracy"])
+
+    if (
+        case_count is None
+        or case_count <= 0
+        or plan_valid_count is None
+        or tool_selection_correct_count is None
+        or unsafe_tool_selection_count is None
+        or total_cost_cny is None
+        or p95_latency_ms is None
+        or plan_valid_rate is None
+        or tool_selection_accuracy is None
+    ):
+        return None
+    if plan_valid_count > case_count or tool_selection_correct_count > case_count:
+        return None
+    if total_cost_cny < 0 or p95_latency_ms < 0:
+        return None
+    if not 0 <= plan_valid_rate <= 1 or not 0 <= tool_selection_accuracy <= 1:
+        return None
+    if not _rate_matches_count(plan_valid_rate, plan_valid_count, case_count):
+        return None
+    if not _rate_matches_count(tool_selection_accuracy, tool_selection_correct_count, case_count):
+        return None
+
+    return {
+        "case_count": case_count,
+        "plan_valid_count": plan_valid_count,
+        "tool_selection_correct_count": tool_selection_correct_count,
+        "unsafe_tool_selection_count": unsafe_tool_selection_count,
+        "total_cost_cny": total_cost_cny,
+        "p95_latency_ms": p95_latency_ms,
+        "plan_valid_rate": plan_valid_rate,
+        "tool_selection_accuracy": tool_selection_accuracy,
+    }
+
+
+def _promotion_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def _promotion_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
     try:
-        return float(metrics.get(key, 0))
-    except (TypeError, ValueError):
-        return 0.0
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if isfinite(number) else None
 
 
-def _metric_int(metrics: dict[str, Any], key: str) -> int:
+def _promotion_decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool):
+        return None
     try:
-        return int(metrics.get(key, 0))
-    except (TypeError, ValueError):
-        return 0
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return result if result.is_finite() else None
 
 
-def _metric_decimal(metrics: dict[str, Any], key: str) -> Decimal:
+def _rate_matches_count(rate: float, count: int, case_count: int) -> bool:
+    return abs(rate - round(count / case_count, 4)) <= 1e-12
+
+
+def _promotion_p95_latency_multiplier() -> float | None:
+    value = getattr(
+        settings,
+        "EVAL_PROMOTION_P95_LATENCY_MULTIPLIER",
+        DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER,
+    )
+    if isinstance(value, bool):
+        return None
     try:
-        return _to_decimal(metrics.get(key, 0), Decimal("0"))
-    except ValueError:
-        return Decimal("Infinity")
-
-
-def _promotion_p95_latency_multiplier() -> float:
-    try:
-        multiplier = float(
-            getattr(
-                settings,
-                "EVAL_PROMOTION_P95_LATENCY_MULTIPLIER",
-                DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER,
-            )
-        )
-    except (TypeError, ValueError):
-        return DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER
-    return multiplier if multiplier > 0 else DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER
+        multiplier = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return multiplier if isfinite(multiplier) and multiplier > 0 else None
 
 
 def _percentile(values: list[int], percentile: float) -> int:
