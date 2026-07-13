@@ -6,6 +6,8 @@ from .models import (
     AgentRun,
     AgentStep,
     ContentChunk,
+    EvaluationCaseResult,
+    EvaluationRun,
     LLMUsageEvent,
     MemoryEntry,
     RagCitation,
@@ -30,6 +32,37 @@ class AgentRunAdmin(admin.ModelAdmin):
     search_fields = ("trigger", "error_message")
     readonly_fields = ("created_at", "updated_at")
     inlines = [AgentStepInline]
+
+
+@admin.register(EvaluationRun)
+class EvaluationRunAdmin(admin.ModelAdmin):
+    list_display = ("id", "dataset_version", "strategy", "mode", "status", "started_at", "finished_at")
+    list_filter = ("dataset_version", "strategy", "mode", "status")
+    search_fields = ("dataset_version", "strategy", "error_message")
+    readonly_fields = ("agent_run", "metrics_json", "created_at", "updated_at")
+
+
+@admin.register(EvaluationCaseResult)
+class EvaluationCaseResultAdmin(admin.ModelAdmin):
+    list_display = ("case_id", "evaluation_run", "category", "status", "latency_ms", "cost_cny")
+    list_filter = ("category", "status")
+    search_fields = ("case_id", "goal", "expected_task_type", "actual_task_type")
+    readonly_fields = (
+        "evaluation_run",
+        "case_id",
+        "category",
+        "goal",
+        "expected_task_type",
+        "expected_tools",
+        "actual_task_type",
+        "actual_tools",
+        "status",
+        "latency_ms",
+        "cost_cny",
+        "detail_json",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(AgentApproval)
