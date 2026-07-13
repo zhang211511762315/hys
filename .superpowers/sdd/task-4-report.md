@@ -79,3 +79,40 @@ After the minimal implementation, the same six focused tests passed. The acknowl
 ## Notes
 
 - Django commands emitted an existing LangGraph pending-deprecation warning. It did not produce a test, check, or migration failure.
+
+## Database-integrity review fix
+
+### Finding and correction
+
+The initial acknowledgement check constraint used `IN` and equality predicates without explicit non-null checks. SQL `CHECK` treats an `UNKNOWN` expression as passing, so an `acknowledged_at` value combined with a null observed or confirmed status could bypass the constraint and be incorrectly excluded from actionable health counts.
+
+The model and unreleased `0012_crawlfailure_acknowledgement` migration now require every acknowledged row to have:
+
+- non-null observed HTTP status in `{404, 410}`;
+- non-null independently confirmed status in `{404, 410}`;
+- equality between observed and confirmed status;
+- a non-null, non-empty audit note; and
+- permanent failure class plus `permanent=True`.
+
+Unacknowledged HTTP failures continue to retain their observed `http_status`; only acknowledgement metadata must be absent when `acknowledged_at` is absent.
+
+### TDD evidence
+
+Added a parameterized direct database-write regression test for all incomplete/invalid acknowledgement forms: missing confirmed status, missing observed status, both statuses missing, empty note, status outside 404/410, and mismatched 404/410 statuses. It uses `transaction.atomic()` and expects `IntegrityError`, proving the database rather than only service validation enforces the invariant. The existing service-path test continues to prove a valid observed permanent 404 can be dry-run and applied, then is reset by re-observation.
+
+Red command:
+
+```text
+/home/ubuntu/hys/.venv/bin/pytest -q aggregator/tests/test_services.py::test_database_constraint_rejects_every_incomplete_or_invalid_acknowledgement aggregator/tests/test_services.py::test_acknowledgement_requires_permanent_observed_http_404_or_410_and_resets_on_new_observation
+```
+
+Result: `3 failed, 4 passed`. The three failures were precisely the NULL-bypass rows: missing confirmed status, missing observed status, and both statuses missing.
+
+After adding explicit `isnull=False` checks plus status membership in both model and migration constraint, the same command returned `7 passed in 1.83s`.
+
+### Verification
+
+- `/home/ubuntu/hys/.venv/bin/pytest -q aggregator/tests/test_services.py aggregator/tests/test_web.py` — `62 passed in 2.89s`.
+- `/home/ubuntu/hys/.venv/bin/python manage.py check --settings=zhongbei_info.settings_test` — no issues.
+- `/home/ubuntu/hys/.venv/bin/python manage.py makemigrations --check --dry-run --settings=zhongbei_info.settings_test` — no changes detected.
+- `git diff --check` — no whitespace errors.

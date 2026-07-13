@@ -5,6 +5,7 @@ import httpx
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from aggregator.services.failures import CrawlFailureAcknowledgementError, acknowledge_crawl_failures
@@ -625,6 +626,44 @@ def test_acknowledgement_rejects_transient_network_and_non_http_permanent_failur
             acknowledge_crawl_failures([failure.id], note="Confirmed by operator", confirmed_status=404, apply=True)
         failure.refresh_from_db()
         assert failure.acknowledged_at is None
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("http_status", "acknowledged_status", "acknowledged_note"),
+    [
+        (404, None, "Confirmed by operator"),
+        (None, 404, "Confirmed by operator"),
+        (None, None, "Confirmed by operator"),
+        (404, 404, ""),
+        (404, 400, "Confirmed by operator"),
+        (404, 410, "Confirmed by operator"),
+    ],
+)
+def test_database_constraint_rejects_every_incomplete_or_invalid_acknowledgement(
+    http_status,
+    acknowledged_status,
+    acknowledged_note,
+):
+    source = Source.objects.create(
+        name="确认约束来源",
+        url="https://acknowledgement-constraint.example.edu/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+    )
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        CrawlFailure.objects.create(
+            crawl_job=job,
+            source=source,
+            url=source.url,
+            failure_class=CrawlFailure.FailureClass.PERMANENT,
+            permanent=True,
+            http_status=http_status,
+            acknowledged_at=timezone.now(),
+            acknowledged_status=acknowledged_status,
+            acknowledged_note=acknowledged_note,
+        )
 
 
 @pytest.mark.django_db

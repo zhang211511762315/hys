@@ -41,7 +41,11 @@ class Migration(migrations.Migration):
                     | (
                         models.Q(
                             acknowledged_at__isnull=False,
+                            http_status__isnull=False,
+                            http_status__in=[404, 410],
+                            acknowledged_status__isnull=False,
                             acknowledged_status__in=[404, 410],
+                            acknowledged_note__isnull=False,
                             failure_class="permanent",
                             permanent=True,
                         )
