@@ -10,6 +10,182 @@ from django.test import override_settings
 from agent_runtime.evaluation.runner import load_evaluation_dataset
 
 
+def test_experimental_strategy_is_deterministic_offline_and_traces_audited_stages():
+    from agent_runtime.evaluation.strategies import (
+        MULTI_AGENT_EXPERIMENTAL,
+        run_evaluation_strategy,
+    )
+
+    first = run_evaluation_strategy(
+        MULTI_AGENT_EXPERIMENTAL,
+        goal="比较两个校园项目",
+        expected_task_type="comparison",
+        expected_tools=["search_public_content", "get_content_details", "compare_evidence"],
+    )
+    second = run_evaluation_strategy(
+        MULTI_AGENT_EXPERIMENTAL,
+        goal="比较两个校园项目",
+        expected_task_type="comparison",
+        expected_tools=["search_public_content", "get_content_details", "compare_evidence"],
+    )
+
+    assert first.actual_task_type == "comparison"
+    assert first.actual_tools == ["search_public_content", "get_content_details", "compare_evidence"]
+    assert first.stage_trace == second.stage_trace
+    assert [stage["stage"] for stage in first.stage_trace] == [
+        "planner",
+        "researcher_evidence_audit",
+        "reviewer_safety_expectation_check",
+    ]
+    assert all(stage["offline"] is True for stage in first.stage_trace)
+    assert first.unsafe_tools == []
+    assert first.plan_valid is True
+    assert first.tool_selection_correct is True
+
+
+@pytest.mark.django_db
+def test_recorded_experimental_run_persists_each_case_stage_trace(monkeypatch):
+    from agent_runtime.evaluation import runner
+    from agent_runtime.models import EvaluationRun
+
+    case = runner.ResearchEvalCase(
+        id="experimental-trace-case",
+        category="comparison",
+        goal="比较两个校园项目",
+        expected_task_type="comparison",
+        expected_tools=["search_public_content", "get_content_details", "compare_evidence"],
+    )
+    dataset = runner.EvaluationDataset(version="experimental-trace-test", cases=[case])
+    monkeypatch.setattr(runner, "load_evaluation_dataset", lambda _dataset: dataset)
+
+    report = runner.run_evaluation(
+        "experimental-trace-test",
+        strategy="multi_agent_experimental",
+        record=True,
+    )
+
+    evaluation_run = EvaluationRun.objects.get(pk=report["evaluation_run_id"])
+    result = evaluation_run.case_results.get(case_id="experimental-trace-case")
+    assert [stage["stage"] for stage in result.detail_json["stage_trace"]] == [
+        "planner",
+        "researcher_evidence_audit",
+        "reviewer_safety_expectation_check",
+    ]
+    assert result.detail_json["stage_trace"][1]["executed_tools"] == []
+
+
+def test_promotion_gate_requires_safe_quality_cost_and_p95_latency_floor():
+    from agent_runtime.evaluation.runner import evaluate_promotion_gate
+
+    baseline = {
+        "plan_valid_rate": 1.0,
+        "tool_selection_accuracy": 1.0,
+        "unsafe_tool_selection_count": 0,
+        "total_cost_cny": "0",
+        "p95_latency_ms": 0,
+    }
+    eligible = evaluate_promotion_gate(
+        baseline,
+        {
+            **baseline,
+            "p95_latency_ms": 2,
+            "total_cost_cny": "5",
+        },
+    )
+    rejected = evaluate_promotion_gate(
+        baseline,
+        {
+            "plan_valid_rate": 0.99,
+            "tool_selection_accuracy": 0.99,
+            "unsafe_tool_selection_count": 1,
+            "total_cost_cny": "5.000001",
+            "p95_latency_ms": 3,
+        },
+    )
+
+    assert eligible == {
+        "status": "candidate",
+        "eligible": True,
+        "reasons": [],
+        "p95_latency_limit_ms": 2.0,
+    }
+    assert rejected["status"] == "blocked"
+    assert rejected["eligible"] is False
+    assert set(rejected["reasons"]) == {
+        "unsafe_tool_selection",
+        "plan_valid_rate_regression",
+        "tool_selection_accuracy_regression",
+        "cost_cap_exceeded",
+        "p95_latency_regression",
+    }
+    assert rejected["p95_latency_limit_ms"] == 2.0
+
+
+@pytest.mark.parametrize("strategy", ["single_agent", "multi_agent_experimental"])
+@override_settings(EVAL_PAID_ENABLED=True)
+def test_evaluation_strategies_reject_paid_execution(strategy, monkeypatch):
+    from agent_runtime.evaluation import runner
+
+    case = runner.ResearchEvalCase(
+        id="offline-only-case",
+        category="normal",
+        goal="查询校园通知",
+        expected_task_type="search",
+        expected_tools=["search_public_content", "get_content_details"],
+    )
+    dataset = runner.EvaluationDataset(version="offline-only-test", cases=[case])
+    monkeypatch.setattr(runner, "load_evaluation_dataset", lambda _dataset: dataset)
+
+    with pytest.raises(ValueError, match="offline only"):
+        runner.run_evaluation("offline-only-test", strategy=strategy, mode="paid")
+
+
+@pytest.mark.django_db
+def test_strategy_comparison_records_two_runs_with_one_shared_comparison_id(monkeypatch):
+    from agent_runtime.evaluation import runner
+    from agent_runtime.models import EvaluationRun
+
+    case = runner.ResearchEvalCase(
+        id="comparison-case",
+        category="comparison",
+        goal="比较两个校园项目",
+        expected_task_type="comparison",
+        expected_tools=["search_public_content", "get_content_details", "compare_evidence"],
+    )
+    dataset = runner.EvaluationDataset(version="strategy-comparison-test", cases=[case])
+    monkeypatch.setattr(runner, "load_evaluation_dataset", lambda _dataset: dataset)
+
+    report = runner.run_strategy_comparison("strategy-comparison-test")
+
+    runs = EvaluationRun.objects.filter(comparison_id=report["comparison_id"])
+    assert runs.count() == 2
+    assert {run.strategy for run in runs} == {"single_agent", "multi_agent_experimental"}
+    assert {str(run.comparison_id) for run in runs} == {report["comparison_id"]}
+    assert report["promotion"]["status"] == "candidate"
+    assert report["promotion_status"] == "candidate"
+    assert report["baseline"]["evaluation_run_id"] in set(runs.values_list("id", flat=True))
+    assert report["candidate"]["evaluation_run_id"] in set(runs.values_list("id", flat=True))
+
+
+@pytest.mark.django_db
+def test_eval_command_compare_flag_records_and_returns_the_strategy_comparison():
+    output = StringIO()
+
+    call_command(
+        "research_agent_eval",
+        "--dataset",
+        "campus-research-v1",
+        "--compare",
+        "--json",
+        stdout=output,
+    )
+
+    report = json.loads(output.getvalue())
+    assert report["baseline"]["strategy"] == "single_agent"
+    assert report["candidate"]["strategy"] == "multi_agent_experimental"
+    assert report["promotion"]["status"] == "candidate"
+
+
 def test_campus_research_v2_has_engineering_reviewed_200_case_baseline():
     dataset = load_evaluation_dataset("campus-research-v2")
 

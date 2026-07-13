@@ -88,6 +88,7 @@ class EvaluationRun(TimeStampedModel):
     )
     dataset_version = models.CharField(max_length=80)
     strategy = models.CharField(max_length=80, default="single_agent")
+    comparison_id = models.UUIDField(null=True, blank=True, editable=False, db_index=True)
     mode = models.CharField(max_length=20, choices=Mode.choices, default=Mode.OFFLINE)
     budget_cap_cny = models.DecimalField(max_digits=10, decimal_places=6, default=Decimal("0"))
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING)

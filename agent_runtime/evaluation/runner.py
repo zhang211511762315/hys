@@ -7,11 +7,18 @@ from math import ceil
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+import uuid
 
 from django.conf import settings
 from pydantic import BaseModel, Field
 
-from agent_runtime.research.planner import PUBLIC_TOOLS, build_template_plan
+from agent_runtime.evaluation.strategies import (
+    MULTI_AGENT_EXPERIMENTAL,
+    SINGLE_AGENT,
+    SUPPORTED_EVALUATION_STRATEGIES,
+    run_evaluation_strategy,
+)
+from agent_runtime.research.planner import build_template_plan
 
 
 DATASET_DIRECTORY = Path(__file__).parent / "datasets"
@@ -22,6 +29,8 @@ OFFLINE_MODE = "offline"
 PAID_MODE = "paid"
 DEFAULT_STRATEGY = "single_agent"
 ABSOLUTE_PAID_HARD_CAP_CNY = Decimal("5")
+DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER = 2.0
+PROMOTION_P95_BASELINE_FLOOR_MS = 1.0
 
 
 class ResearchEvalCase(BaseModel):
@@ -97,11 +106,15 @@ def run_evaluation(
     mode: str = OFFLINE_MODE,
     budget_cap_cny: Decimal | int | float | str | None = None,
     record: bool = False,
+    comparison_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Run a deterministic planner evaluation, optionally recording durable snapshots."""
     normalized_mode, budget_cap = _validate_evaluation_options(mode, budget_cap_cny)
-    if strategy != DEFAULT_STRATEGY:
+    if strategy not in SUPPORTED_EVALUATION_STRATEGIES:
         raise ValueError(f"unsupported evaluation strategy: {strategy}")
+    if normalized_mode != OFFLINE_MODE:
+        raise ValueError("evaluation strategies are offline only")
+    normalized_comparison_id = _normalize_comparison_id(comparison_id)
 
     evaluation_dataset = load_evaluation_dataset(dataset)
     cases = evaluation_dataset.cases
@@ -120,6 +133,7 @@ def run_evaluation(
             agent_run=agent_run,
             dataset_version=evaluation_dataset.version,
             strategy=strategy,
+            comparison_id=normalized_comparison_id,
             mode=normalized_mode,
             budget_cap_cny=budget_cap,
             status=EvaluationRun.Status.RUNNING,
@@ -142,16 +156,22 @@ def run_evaluation(
             unsafe_tools: list[str] = []
             error_message = ""
             try:
-                plan = build_template_plan(case.goal)
-                actual_task_type = plan.task_type
-                actual_tools = [step.tool for step in plan.steps]
-                unsafe_tools = [tool for tool in actual_tools if tool not in PUBLIC_TOOLS]
-                plan_valid = 1 <= len(plan.steps) <= 6 and not unsafe_tools
-                selection_correct = (
-                    actual_task_type == case.expected_task_type and actual_tools == case.expected_tools
+                strategy_result = run_evaluation_strategy(
+                    strategy,
+                    goal=case.goal,
+                    expected_task_type=case.expected_task_type,
+                    expected_tools=case.expected_tools,
+                    plan_builder=build_template_plan,
                 )
+                actual_task_type = strategy_result.actual_task_type
+                actual_tools = strategy_result.actual_tools
+                unsafe_tools = strategy_result.unsafe_tools
+                plan_valid = strategy_result.plan_valid
+                selection_correct = strategy_result.tool_selection_correct
+                stage_trace = strategy_result.stage_trace
             except Exception as exc:
                 error_message = str(exc)
+                stage_trace = []
 
             latency_ms = max(0, round((perf_counter() - started) * 1000))
             latencies.append(latency_ms)
@@ -164,6 +184,7 @@ def run_evaluation(
                 "tool_selection_correct": selection_correct,
                 "unsafe_tools": unsafe_tools,
                 "plan_step_count": len(actual_tools),
+                "stage_trace": stage_trace,
             }
             if error_message:
                 detail["error"] = error_message
@@ -227,6 +248,7 @@ def run_evaluation(
             "strategy": strategy,
             "mode": normalized_mode,
             "budget_cap_cny": str(budget_cap),
+            "comparison_id": str(normalized_comparison_id) if normalized_comparison_id else None,
             "evaluation_run_id": evaluation_run.pk if evaluation_run is not None else None,
             **metrics,
             "failures": failures,
@@ -248,6 +270,77 @@ def run_evaluation(
 def run_planner_evaluation(path: Path = DATASET_PATH) -> dict[str, Any]:
     """Keep the original v1 planner function as a zero-cost, non-recording wrapper."""
     return run_evaluation(path, record=False)
+
+
+def run_strategy_comparison(
+    dataset: str | Path = V2_DATASET_PATH,
+    *,
+    mode: str = OFFLINE_MODE,
+    budget_cap_cny: Decimal | int | float | str | None = None,
+) -> dict[str, Any]:
+    """Run the offline baseline and experimental strategy as one durable comparison."""
+    comparison_id = uuid.uuid4()
+    baseline = run_evaluation(
+        dataset,
+        strategy=SINGLE_AGENT,
+        mode=mode,
+        budget_cap_cny=budget_cap_cny,
+        record=True,
+        comparison_id=comparison_id,
+    )
+    candidate = run_evaluation(
+        dataset,
+        strategy=MULTI_AGENT_EXPERIMENTAL,
+        mode=mode,
+        budget_cap_cny=budget_cap_cny,
+        record=True,
+        comparison_id=comparison_id,
+    )
+    promotion = evaluate_promotion_gate(baseline, candidate)
+    return {
+        "comparison_id": str(comparison_id),
+        "dataset_version": baseline["dataset_version"],
+        "mode": baseline["mode"],
+        "baseline": baseline,
+        "candidate": candidate,
+        "promotion": promotion,
+        "promotion_status": promotion["status"],
+    }
+
+
+def evaluate_promotion_gate(
+    baseline_metrics: dict[str, Any],
+    candidate_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the deterministic safety gate for an experimental evaluation result."""
+    reasons: list[str] = []
+    if _metric_int(candidate_metrics, "unsafe_tool_selection_count") > 0:
+        reasons.append("unsafe_tool_selection")
+    if _metric_float(candidate_metrics, "plan_valid_rate") < _metric_float(
+        baseline_metrics, "plan_valid_rate"
+    ):
+        reasons.append("plan_valid_rate_regression")
+    if _metric_float(candidate_metrics, "tool_selection_accuracy") < _metric_float(
+        baseline_metrics, "tool_selection_accuracy"
+    ):
+        reasons.append("tool_selection_accuracy_regression")
+    if _metric_decimal(candidate_metrics, "total_cost_cny") > ABSOLUTE_PAID_HARD_CAP_CNY:
+        reasons.append("cost_cap_exceeded")
+
+    p95_latency_limit_ms = max(
+        PROMOTION_P95_BASELINE_FLOOR_MS,
+        _metric_float(baseline_metrics, "p95_latency_ms"),
+    ) * _promotion_p95_latency_multiplier()
+    if _metric_float(candidate_metrics, "p95_latency_ms") > p95_latency_limit_ms:
+        reasons.append("p95_latency_regression")
+
+    eligible = not reasons
+    return {
+        "status": "candidate" if eligible else "blocked",
+        "eligible": eligible,
+        "reasons": reasons,
+        "p95_latency_limit_ms": p95_latency_limit_ms,
+    }
 
 
 def _validate_evaluation_options(
@@ -287,6 +380,52 @@ def _to_decimal(value: Decimal | int | float | str | None, default: Decimal) -> 
     if not result.is_finite():
         raise ValueError("evaluation budget cap must be finite")
     return result
+
+
+def _normalize_comparison_id(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("comparison_id must be a UUID") from exc
+
+
+def _metric_float(metrics: dict[str, Any], key: str) -> float:
+    try:
+        return float(metrics.get(key, 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _metric_int(metrics: dict[str, Any], key: str) -> int:
+    try:
+        return int(metrics.get(key, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _metric_decimal(metrics: dict[str, Any], key: str) -> Decimal:
+    try:
+        return _to_decimal(metrics.get(key, 0), Decimal("0"))
+    except ValueError:
+        return Decimal("Infinity")
+
+
+def _promotion_p95_latency_multiplier() -> float:
+    try:
+        multiplier = float(
+            getattr(
+                settings,
+                "EVAL_PROMOTION_P95_LATENCY_MULTIPLIER",
+                DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER,
+            )
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER
+    return multiplier if multiplier > 0 else DEFAULT_PROMOTION_P95_LATENCY_MULTIPLIER
 
 
 def _percentile(values: list[int], percentile: float) -> int:

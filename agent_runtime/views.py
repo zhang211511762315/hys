@@ -18,7 +18,17 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from aggregator.models import AIUsageDaily, ContentItem, CrawlFailure, Source
 
 from .forms import SignupForm
-from .models import AgentRun, ContentChunk, LLMUsageEvent, MemoryEntry, RagMessage, RagSession, ToolInvocation
+from .models import (
+    AgentRun,
+    ContentChunk,
+    EvaluationRun,
+    LLMUsageEvent,
+    MemoryEntry,
+    RagMessage,
+    RagSession,
+    ToolInvocation,
+)
+from .evaluation.runner import evaluate_promotion_gate
 from .research.runtime import cancel_research_run, create_research_run, replay_research_run
 from .research.schemas import CreateResearchRunInput
 from .services import answer_question_events, cleanup_expired_memory, new_session_key, save_explicit_memory, sse_event
@@ -224,6 +234,7 @@ def agent_dashboard(request):
     latest_runs = AgentRun.objects.prefetch_related("steps").order_by("-created_at")[:10]
     latest_usage = LLMUsageEvent.objects.order_by("-created_at")[:10]
     latest_eval = AgentRun.objects.filter(kind=AgentRun.Kind.EVAL).order_by("-created_at").first()
+    latest_evalops_comparison = _latest_evalops_comparison()
     latest_self_heal = AgentRun.objects.filter(kind=AgentRun.Kind.SELF_HEAL).order_by("-created_at").first()
     tool_durations = list(
         ToolInvocation.objects.filter(status=ToolInvocation.Status.SUCCEEDED, duration_ms__gt=0)
@@ -259,6 +270,7 @@ def agent_dashboard(request):
             "latest_usage": latest_usage,
             "latest_eval": latest_eval,
             "latest_eval_metrics": latest_eval_metrics,
+            "latest_evalops_comparison": latest_evalops_comparison,
             "latest_self_heal": latest_self_heal,
             "daily_budget_cny": settings.DEEPSEEK_DAILY_BUDGET_CNY,
             "monthly_budget_cny": settings.DEEPSEEK_MONTHLY_BUDGET_CNY,
@@ -482,6 +494,50 @@ def _display_eval_metrics(metrics: dict) -> dict:
         "retrieval_hit_rate": percent("retrieval_hit_rate"),
         "expected_keyword_hit_rate": percent("expected_keyword_hit_rate"),
         "paid_llm_calls": metrics.get("paid_llm_calls", 0),
+    }
+
+
+def _latest_evalops_comparison() -> dict | None:
+    latest_run = (
+        EvaluationRun.objects.filter(comparison_id__isnull=False)
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if latest_run is None:
+        return None
+
+    runs = {
+        run.strategy: run
+        for run in EvaluationRun.objects.filter(comparison_id=latest_run.comparison_id)
+    }
+    baseline = runs.get("single_agent")
+    candidate = runs.get("multi_agent_experimental")
+    if baseline is None or candidate is None:
+        return None
+
+    promotion = evaluate_promotion_gate(baseline.metrics_json or {}, candidate.metrics_json or {})
+    return {
+        "comparison_id": str(latest_run.comparison_id),
+        "dataset_version": candidate.dataset_version,
+        "promotion": promotion,
+        "baseline": _display_evalops_strategy_metrics(baseline.metrics_json or {}),
+        "candidate": _display_evalops_strategy_metrics(candidate.metrics_json or {}),
+    }
+
+
+def _display_evalops_strategy_metrics(metrics: dict) -> dict:
+    def percent(key: str) -> str:
+        try:
+            return f"{float(metrics.get(key, 0)) * 100:.1f}%"
+        except (TypeError, ValueError):
+            return "0.0%"
+
+    return {
+        "plan_valid_rate": percent("plan_valid_rate"),
+        "tool_selection_accuracy": percent("tool_selection_accuracy"),
+        "unsafe_tool_selection_count": metrics.get("unsafe_tool_selection_count", 0),
+        "total_cost_cny": metrics.get("total_cost_cny", "0"),
+        "p95_latency_ms": metrics.get("p95_latency_ms", 0),
     }
 
 

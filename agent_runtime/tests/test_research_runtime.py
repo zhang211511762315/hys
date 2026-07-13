@@ -1,4 +1,5 @@
 import json
+from uuid import uuid4
 
 import pytest
 from django.core.cache import cache
@@ -293,6 +294,61 @@ def test_agent_dashboard_displays_research_latency_percentiles():
     assert ">20 ms<" in html
     assert "工具延迟 P95" in html
     assert ">100 ms<" in html
+
+
+@pytest.mark.django_db
+def test_agent_dashboard_shows_only_latest_aggregate_evalops_comparison():
+    from agent_runtime.models import AgentRun, EvaluationCaseResult, EvaluationRun
+
+    comparison_id = uuid4()
+    baseline = EvaluationRun.objects.create(
+        agent_run=AgentRun.objects.create(kind=AgentRun.Kind.EVAL),
+        comparison_id=comparison_id,
+        dataset_version="strategy-dashboard-test",
+        strategy="single_agent",
+        metrics_json={
+            "plan_valid_rate": 1.0,
+            "tool_selection_accuracy": 1.0,
+            "unsafe_tool_selection_count": 0,
+            "total_cost_cny": "0",
+            "p95_latency_ms": 1,
+        },
+    )
+    candidate = EvaluationRun.objects.create(
+        agent_run=AgentRun.objects.create(kind=AgentRun.Kind.EVAL),
+        comparison_id=comparison_id,
+        dataset_version="strategy-dashboard-test",
+        strategy="multi_agent_experimental",
+        metrics_json={
+            "plan_valid_rate": 1.0,
+            "tool_selection_accuracy": 1.0,
+            "unsafe_tool_selection_count": 0,
+            "total_cost_cny": "0",
+            "p95_latency_ms": 2,
+        },
+    )
+    EvaluationCaseResult.objects.create(
+        evaluation_run=candidate,
+        case_id="private-case",
+        category="security",
+        goal="private case goal must never render",
+        expected_task_type="search",
+        expected_tools=["search_public_content"],
+        actual_task_type="search",
+        actual_tools=["search_public_content"],
+        status=EvaluationCaseResult.Status.SUCCEEDED,
+        detail_json={"stage_trace": [{"stage": "planner"}]},
+    )
+
+    html = Client().get("/agent/").content.decode()
+
+    assert "EvalOps 策略对比" in html
+    assert "候选" in html
+    assert "单Agent" in html
+    assert "多Agent（实验）" in html
+    assert "private case goal must never render" not in html
+    assert "private-case" not in html
+    assert baseline.case_results.count() == 0
 
 
 @pytest.mark.django_db

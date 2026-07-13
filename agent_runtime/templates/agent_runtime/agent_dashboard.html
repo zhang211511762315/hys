@@ -97,6 +97,32 @@
 <section class="grid">
   <div>
     <article class="item">
+      <h2>EvalOps 策略对比</h2>
+      {% if latest_evalops_comparison %}
+        <p class="summary">
+          最近比较：{{ latest_evalops_comparison.dataset_version }} ·
+          {% if latest_evalops_comparison.promotion.status == "candidate" %}<strong>候选</strong>{% else %}<strong>阻止</strong>{% endif %}
+        </p>
+        <p class="usage-line">
+          单Agent：有效计划 {{ latest_evalops_comparison.baseline.plan_valid_rate }} ·
+          工具选择 {{ latest_evalops_comparison.baseline.tool_selection_accuracy }} ·
+          不安全 {{ latest_evalops_comparison.baseline.unsafe_tool_selection_count }} ·
+          P95 {{ latest_evalops_comparison.baseline.p95_latency_ms }} ms ·
+          成本 {{ latest_evalops_comparison.baseline.total_cost_cny }} 元
+        </p>
+        <p class="usage-line">
+          多Agent（实验）：有效计划 {{ latest_evalops_comparison.candidate.plan_valid_rate }} ·
+          工具选择 {{ latest_evalops_comparison.candidate.tool_selection_accuracy }} ·
+          不安全 {{ latest_evalops_comparison.candidate.unsafe_tool_selection_count }} ·
+          P95 {{ latest_evalops_comparison.candidate.p95_latency_ms }} ms ·
+          成本 {{ latest_evalops_comparison.candidate.total_cost_cny }} 元
+        </p>
+      {% else %}
+        <p class="summary">尚无已完成的 EvalOps 策略比较。</p>
+      {% endif %}
+    </article>
+
+    <article class="item">
       <h2>自动评测</h2>
       {% if latest_eval %}
         <p class="summary">

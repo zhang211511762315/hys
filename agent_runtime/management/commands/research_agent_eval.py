@@ -2,7 +2,7 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from agent_runtime.evaluation.runner import run_evaluation
+from agent_runtime.evaluation.runner import run_evaluation, run_strategy_comparison
 
 
 class Command(BaseCommand):
@@ -13,18 +13,31 @@ class Command(BaseCommand):
         parser.add_argument("--dataset", default="campus-research-v1")
         parser.add_argument("--strategy", default="single_agent")
         parser.add_argument("--record", action="store_true")
+        parser.add_argument("--compare", action="store_true")
 
     def handle(self, *args, **options):
         try:
-            report = run_evaluation(
-                dataset=options["dataset"],
-                strategy=options["strategy"],
-                record=options["record"],
-            )
+            if options["compare"]:
+                report = run_strategy_comparison(dataset=options["dataset"])
+            else:
+                report = run_evaluation(
+                    dataset=options["dataset"],
+                    strategy=options["strategy"],
+                    record=options["record"],
+                )
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
         if options["json"]:
             self.stdout.write(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            return
+        if options["compare"]:
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"comparison={report['comparison_id']} promotion={report['promotion']['status']} "
+                    f"baseline={report['baseline']['strategy']} "
+                    f"candidate={report['candidate']['strategy']}"
+                )
+            )
             return
         self.stdout.write(
             self.style.SUCCESS(
