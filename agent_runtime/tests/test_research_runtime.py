@@ -365,7 +365,7 @@ def test_authenticated_duplicate_admission_locks_user_then_current_run_and_skips
 
     assert response.status_code == 200
     assert response.json()["run_id"] == str(run.public_id)
-    assert locking_order[:2] == [get_user_model(), AgentRun]
+    assert locking_order == [get_user_model()]
 
 
 @pytest.mark.django_db
@@ -382,7 +382,7 @@ def test_authenticated_first_admission_locks_before_quota_and_creates_once(monke
         return original_select_for_update(queryset, *args, **kwargs)
 
     def quota_after_locks(_client_ip):
-        assert locking_order[:2] == [get_user_model(), AgentRun]
+        assert locking_order == [get_user_model()]
         return True
 
     monkeypatch.setattr(QuerySet, "select_for_update", observe_lock)
@@ -399,6 +399,64 @@ def test_authenticated_first_admission_locks_before_quota_and_creates_once(monke
 
     assert response.status_code == 202
     assert AgentRun.objects.filter(client_request_id="admission-first-request").count() == 1
+
+
+@pytest.mark.django_db
+def test_anonymous_rejected_admission_rechecks_and_reuses_a_concurrent_run(monkeypatch):
+    from agent_runtime.models import AgentRun
+
+    client_request_id = "anonymous-admission-race"
+    concurrent_run = []
+
+    def reject_after_concurrent_creation(_client_ip):
+        run = AgentRun.objects.create(
+            kind=AgentRun.Kind.RAG,
+            client_request_id=client_request_id,
+            request_id=uuid.uuid4(),
+        )
+        concurrent_run.append(run)
+        return False
+
+    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", reject_after_concurrent_creation)
+
+    response = Client().post(
+        "/api/v1/research-runs",
+        data=json.dumps({"goal": "匿名并发重试", "client_request_id": client_request_id}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == str(concurrent_run[0].public_id)
+
+
+@pytest.mark.django_db
+def test_different_authenticated_users_same_key_do_not_take_agent_run_gap_locks(monkeypatch):
+    from agent_runtime.models import AgentRun
+
+    first_user = get_user_model().objects.create_user(username="gap-lock-first", password="safe-test-password-123")
+    second_user = get_user_model().objects.create_user(username="gap-lock-second", password="safe-test-password-123")
+    locking_agent_queries = []
+    original_select_for_update = QuerySet.select_for_update
+
+    def observe_locks(queryset, *args, **kwargs):
+        if queryset.model is AgentRun:
+            locking_agent_queries.append(str(queryset.query.where))
+        return original_select_for_update(queryset, *args, **kwargs)
+
+    monkeypatch.setattr(QuerySet, "select_for_update", observe_locks)
+    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    first_client = Client()
+    first_client.force_login(first_user)
+    second_client = Client()
+    second_client.force_login(second_user)
+    payload = {"goal": "同键不同用户", "client_request_id": "different-user-same-key"}
+
+    first = first_client.post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
+    second = second_client.post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
+
+    assert first.status_code == 202
+    assert second.status_code == 200
+    assert all("client_request_id" not in query for query in locking_agent_queries)
 
 
 @pytest.mark.django_db

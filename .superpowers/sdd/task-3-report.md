@@ -226,3 +226,25 @@ Result: `2 passed in 1.84s`.
 - Authenticated research admissions now hold a `select_for_update()` lock on only the calling user's row, then make a locking current lookup for the client request ID, perform quota/concurrency checks only when no run exists, and invoke the runtime authority while the admission lock is held. This serializes same-user first submissions without blocking unrelated users.
 - The response semantics remain unchanged: duplicates are `200`, new runs are `202`, and task enqueueing remains after the transaction commits.
 - Green command: the two admission regressions passed: `2 passed in 1.96s`.
+
+## Anonymous admission and gap-lock fix addendum
+
+### TDD evidence
+
+- Updated authenticated admission checks to forbid AgentRun absent-key locking while retaining the user-row lock.
+- Added an anonymous rejection regression that creates the concurrent winner during quota rejection and requires a fresh post-transaction recheck to return the existing run as `200`.
+- Added a different-authenticated-user same-key regression that permits only AgentRun locks by primary key for runtime event sequencing, never a `client_request_id` gap lock.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_authenticated_duplicate_admission_locks_user_then_current_run_and_skips_quota agent_runtime/tests/test_research_runtime.py::test_authenticated_first_admission_locks_before_quota_and_creates_once agent_runtime/tests/test_research_runtime.py::test_anonymous_rejected_admission_rechecks_and_reuses_a_concurrent_run agent_runtime/tests/test_research_runtime.py::test_different_authenticated_users_same_key_do_not_take_agent_run_gap_locks -q
+  ```
+
+  Result: `4 failed`; the HTTP path locked absent AgentRun keys and returned anonymous quota rejection without rechecking for the concurrent winner.
+
+### Changes and green verification
+
+- The HTTP admission path now uses an ordinary client-request existence read; it retains only the authenticated caller's row lock. This avoids inter-user client-key gap locks while the runtime continues to own first-create duplicate recovery.
+- Quota/concurrency rejection exits the admission transaction, performs a fresh autocommit existence query, and delegates to the runtime authority only when a matching run now exists. A true rejection with no match still returns `429` and creates nothing.
+- New admission regression command: `4 passed in 2.07s`.
+- Focused research runtime suite: `36 passed in 2.26s`.

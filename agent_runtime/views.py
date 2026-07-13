@@ -439,17 +439,16 @@ def research_runs(request):
     except Exception:
         return JsonResponse({"error": "invalid request"}, status=400)
     client_ip = _client_ip(request)
+    admission_error = None
+    run = None
+    created = False
     with transaction.atomic():
         if request.user.is_authenticated:
             get_user_model().objects.select_for_update().get(pk=request.user.pk)
-        existing = (
-            AgentRun.objects.select_for_update()
-            .filter(client_request_id=payload.client_request_id)
-            .first()
-        )
+        existing = AgentRun.objects.filter(client_request_id=payload.client_request_id).first()
         if existing is None:
             if not _consume_daily_research_quota(client_ip):
-                return JsonResponse({"error": "daily limit exceeded"}, status=429)
+                admission_error = "daily limit exceeded"
             active_statuses = [
                 AgentRun.Status.QUEUED,
                 AgentRun.Status.PLANNING,
@@ -457,16 +456,25 @@ def research_runs(request):
                 AgentRun.Status.VERIFYING,
                 AgentRun.Status.RUNNING,
             ]
-            if AgentRun.objects.filter(trigger=f"research_api:{client_ip}", status__in=active_statuses).count() >= settings.RESEARCH_AGENT_CONCURRENT_LIMIT:
-                return JsonResponse({"error": "concurrent limit exceeded"}, status=429)
+            if admission_error is None and AgentRun.objects.filter(trigger=f"research_api:{client_ip}", status__in=active_statuses).count() >= settings.RESEARCH_AGENT_CONCURRENT_LIMIT:
+                admission_error = "concurrent limit exceeded"
+        if admission_error is None:
+            run, created = create_research_run(
+                payload.goal,
+                payload.client_request_id,
+                request_id=request.request_id,
+            )
+            if created:
+                run.trigger = f"research_api:{client_ip}"
+                run.save(update_fields=["trigger", "updated_at"])
+    if admission_error is not None:
+        if AgentRun.objects.filter(client_request_id=payload.client_request_id).first() is None:
+            return JsonResponse({"error": admission_error}, status=429)
         run, created = create_research_run(
             payload.goal,
             payload.client_request_id,
             request_id=request.request_id,
         )
-        if created:
-            run.trigger = f"research_api:{client_ip}"
-            run.save(update_fields=["trigger", "updated_at"])
     request.agent_run_id = str(run.public_id)
     if created:
         execute_research_run_task.delay(str(run.public_id))
