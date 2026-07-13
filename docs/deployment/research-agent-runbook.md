@@ -85,13 +85,21 @@ and 443 in the cloud security group. Port 80 intentionally redirects to HTTPS.
 
 ## Deploy
 
+**Pending privileged target-environment deployment sequence (not run by this repository task):**
+
 ```bash
 docker compose build web worker agent_worker scheduler
 docker compose up -d mysql redis meilisearch
 docker compose up -d web worker agent_worker scheduler nginx
 docker compose exec web python manage.py migrate --noinput
+docker compose exec -T web python manage.py ensure_crawl_schedules
 docker compose exec web python manage.py research_agent_eval --dataset campus-research-v2 --strategy single_agent --record --json
 ```
+
+`ensure_crawl_schedules` creates or updates the fixed Celery Beat rows, including
+`cleanup-expired-agent-memory-daily`. Run it after migrations on a fresh deployment
+and before verifying scheduler registration; starting the Compose scheduler alone
+does not create these database-backed Beat rows.
 
 The Nginx service publishes both ports, serves the ACME webroot, and mounts
 `/etc/letsencrypt` read-only. Install the committed systemd unit and timer once:
@@ -134,7 +142,7 @@ Install `deploy/systemd/hys-backup.service` and `deploy/systemd/hys-backup.timer
 with the same `systemctl daemon-reload` and `enable --now` flow as certificate
 renewal.
 
-After deployment, verify `docker compose ps`, `/healthz`, `/readyz`, one research run, its SSE trace and a Replay. Confirm only `agent_worker` consumes the `agent` queue. Confirm the scheduler has registered `cleanup-expired-agent-memory-daily`, then observe one successful scheduled cleanup. Check `/internal/metrics` locally and confirm a non-loopback request is denied. Review `/healthz` counts and alerts before acknowledging any failure.
+After deployment, verify `docker compose ps`, `/healthz`, `/readyz`, one research run, its SSE trace and a Replay. Confirm only `agent_worker` consumes the `agent` queue. After `ensure_crawl_schedules`, confirm the scheduler has registered `cleanup-expired-agent-memory-daily`, then observe one successful scheduled cleanup. Check `/internal/metrics` locally and confirm a non-loopback request is denied. Review `/healthz` counts and alerts before acknowledging any failure.
 
 The read-only deployment gate is:
 

@@ -87,3 +87,13 @@ All commands below were run in the repository worktree with `/home/ubuntu/hys/.v
 ## Concern
 
 `EVAL_PROMOTION_P95_LATENCY_MULTIPLIER` is read as a Django setting with a built-in `2.0` default, but `zhongbei_info/settings.py` does not load it from an environment variable. The runbook documents this deliberately and does not add a non-functional `.env.example` entry. If operators need to tune it through `.env`, that requires a separate code/config change and review.
+
+## Follow-up: deployment schedule creation (2026-07-13)
+
+The deployment runbook now requires this pending privileged target-environment step immediately after migrations and before scheduler verification:
+
+```text
+docker compose exec -T web python manage.py ensure_crawl_schedules
+```
+
+Source verification: `aggregator/management/commands/ensure_crawl_schedules.py` invokes `aggregator.services.scheduling.ensure_fixed_crawl_schedules()` and reports `Ensured fixed crawl schedules.` The service creates or updates the database-backed fixed Celery Beat rows, including `cleanup-expired-agent-memory-daily`; the Compose scheduler does not create those rows by itself. This command was not run against any deployment environment.
