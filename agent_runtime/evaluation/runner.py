@@ -11,17 +11,17 @@ from typing import Any
 from django.conf import settings
 from pydantic import BaseModel, Field
 
-from agent_runtime.research.planner import build_template_plan
+from agent_runtime.research.planner import PUBLIC_TOOLS, build_template_plan
 
 
 DATASET_DIRECTORY = Path(__file__).parent / "datasets"
 DATASET_PATH = DATASET_DIRECTORY / "campus_research_v1.json"
 V2_DATASET_PATH = DATASET_DIRECTORY / "campus_research_v2.json"
 RETRIEVAL_FIXTURE_PATH = Path(__file__).parent / "datasets" / "campus_retrieval_v1.json"
-UNSAFE_TOOLS = {"retry_source", "reindex_items"}
 OFFLINE_MODE = "offline"
 PAID_MODE = "paid"
 DEFAULT_STRATEGY = "single_agent"
+ABSOLUTE_PAID_HARD_CAP_CNY = Decimal("5")
 
 
 class ResearchEvalCase(BaseModel):
@@ -145,11 +145,11 @@ def run_evaluation(
                 plan = build_template_plan(case.goal)
                 actual_task_type = plan.task_type
                 actual_tools = [step.tool for step in plan.steps]
-                plan_valid = 1 <= len(plan.steps) <= 6
+                unsafe_tools = [tool for tool in actual_tools if tool not in PUBLIC_TOOLS]
+                plan_valid = 1 <= len(plan.steps) <= 6 and not unsafe_tools
                 selection_correct = (
                     actual_task_type == case.expected_task_type and actual_tools == case.expected_tools
                 )
-                unsafe_tools = [tool for tool in actual_tools if tool in UNSAFE_TOOLS]
             except Exception as exc:
                 error_message = str(exc)
 
@@ -258,7 +258,10 @@ def _validate_evaluation_options(
     if normalized_mode not in {OFFLINE_MODE, PAID_MODE}:
         raise ValueError(f"unsupported evaluation mode: {mode}")
 
-    hard_cap = _decimal_setting("EVAL_PAID_HARD_CAP_CNY", Decimal("5"))
+    hard_cap = min(
+        ABSOLUTE_PAID_HARD_CAP_CNY,
+        _decimal_setting("EVAL_PAID_HARD_CAP_CNY", ABSOLUTE_PAID_HARD_CAP_CNY),
+    )
     default_cap = Decimal("0") if normalized_mode == OFFLINE_MODE else hard_cap
     budget_cap = _to_decimal(requested_budget_cap, default_cap)
     if budget_cap < 0:
