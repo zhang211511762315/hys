@@ -248,3 +248,24 @@ Result: `2 passed in 1.84s`.
 - Quota/concurrency rejection exits the admission transaction, performs a fresh autocommit existence query, and delegates to the runtime authority only when a matching run now exists. A true rejection with no match still returns `429` and creates nothing.
 - New admission regression command: `4 passed in 2.07s`.
 - Focused research runtime suite: `36 passed in 2.26s`.
+
+## Durable admission-key mutex addendum
+
+### TDD evidence
+
+- Added regressions for a persistent anonymous admission-key lock before quota evaluation, true quota rejection without run creation, first/duplicate public `202`/`200` semantics for one anonymous key, key-first then user lock ordering for authenticated callers, and independent durable keys for different client request IDs.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_authenticated_duplicate_admission_locks_user_then_current_run_and_skips_quota agent_runtime/tests/test_research_runtime.py::test_authenticated_first_admission_locks_before_quota_and_creates_once agent_runtime/tests/test_research_runtime.py::test_anonymous_key_lock_rejects_true_quota_without_creating_a_run agent_runtime/tests/test_research_runtime.py::test_anonymous_same_key_admission_lock_preserves_new_and_duplicate_responses agent_runtime/tests/test_research_runtime.py::test_different_authenticated_users_same_key_do_not_take_agent_run_gap_locks -q
+  ```
+
+  Result: `5 failed` with `ImportError` for the absent `ResearchAdmissionKey` model.
+
+### Changes and green verification
+
+- Added persistent, globally unique `ResearchAdmissionKey` and migration `0012_researchadmissionkey` after Agent Runtime `0011`.
+- The view creates the admission key in a narrow committed transaction; duplicate creation exits the failed transaction and reads the committed key in a fresh transaction. It then locks that key before any AgentRun existence/admission/create action, and locks the authenticated user second. No absent AgentRun key is locked.
+- The prior post-rejection recheck was removed. The mutex ensures a same-key anonymous retry waits for the first request's committed create or true rejection, then sees the resulting run or receives the same true `429` without creating a run.
+- New regression command: `5 passed in 2.00s`.
+- Focused research runtime suite: `37 passed in 2.32s`.

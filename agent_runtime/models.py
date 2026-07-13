@@ -72,6 +72,14 @@ class AgentRun(TimeStampedModel):
         self.save(update_fields=["status", "finished_at", "error_message", "metrics_json", "updated_at"])
 
 
+class ResearchAdmissionKey(TimeStampedModel):
+    client_request_id = models.CharField(max_length=120, unique=True)
+
+    class Meta:
+        verbose_name = "研究请求准入键"
+        verbose_name_plural = "研究请求准入键"
+
+
 class EvaluationRun(TimeStampedModel):
     class Mode(models.TextChoices):
         OFFLINE = "offline", "零成本离线"

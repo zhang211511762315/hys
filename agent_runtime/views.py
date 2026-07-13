@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import PasswordChangeForm
 from django.core.cache import cache
-from django.db import connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Count, Max, Sum
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
@@ -26,6 +26,7 @@ from .models import (
     MemoryEntry,
     RagMessage,
     RagSession,
+    ResearchAdmissionKey,
     ToolInvocation,
 )
 from .evaluation.runner import evaluate_promotion_gate
@@ -439,10 +440,12 @@ def research_runs(request):
     except Exception:
         return JsonResponse({"error": "invalid request"}, status=400)
     client_ip = _client_ip(request)
+    admission_key = _get_research_admission_key(payload.client_request_id)
     admission_error = None
     run = None
     created = False
     with transaction.atomic():
+        ResearchAdmissionKey.objects.select_for_update().get(pk=admission_key.pk)
         if request.user.is_authenticated:
             get_user_model().objects.select_for_update().get(pk=request.user.pk)
         existing = AgentRun.objects.filter(client_request_id=payload.client_request_id).first()
@@ -468,13 +471,7 @@ def research_runs(request):
                 run.trigger = f"research_api:{client_ip}"
                 run.save(update_fields=["trigger", "updated_at"])
     if admission_error is not None:
-        if AgentRun.objects.filter(client_request_id=payload.client_request_id).first() is None:
-            return JsonResponse({"error": admission_error}, status=429)
-        run, created = create_research_run(
-            payload.goal,
-            payload.client_request_id,
-            request_id=request.request_id,
-        )
+        return JsonResponse({"error": admission_error}, status=429)
     request.agent_run_id = str(run.public_id)
     if created:
         execute_research_run_task.delay(str(run.public_id))
@@ -574,6 +571,15 @@ def _client_ip(request) -> str:
     if forwarded:
         return forwarded.split(",", 1)[0].strip()[:64]
     return (request.META.get("REMOTE_ADDR") or "unknown")[:64]
+
+
+def _get_research_admission_key(client_request_id: str) -> ResearchAdmissionKey:
+    try:
+        with transaction.atomic():
+            return ResearchAdmissionKey.objects.create(client_request_id=client_request_id)
+    except IntegrityError:
+        with transaction.atomic():
+            return ResearchAdmissionKey.objects.get(client_request_id=client_request_id)
 
 
 def _consume_daily_research_quota(client_ip: str) -> bool:
