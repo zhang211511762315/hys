@@ -97,3 +97,7 @@ docker compose exec -T web python manage.py ensure_crawl_schedules
 ```
 
 Source verification: `aggregator/management/commands/ensure_crawl_schedules.py` invokes `aggregator.services.scheduling.ensure_fixed_crawl_schedules()` and reports `Ensured fixed crawl schedules.` The service creates or updates the database-backed fixed Celery Beat rows, including `cleanup-expired-agent-memory-daily`; the Compose scheduler does not create those rows by itself. This command was not run against any deployment environment.
+
+## Follow-up: direct-plan completion state (2026-07-13)
+
+`docs/superpowers/plans/2026-07-13-direct-completion.md` now marks the completed, locally reviewed code items in Tasks 1–4 as complete. The Task 4 external re-crawl/acknowledgement remains pending. Task 5 keeps the privileged restore/ACME verification and target-environment Compose, CI, deployment, migration, schedule, and production-probe work unchecked. This documentation-only update does not claim that any server, deployment, certificate, backup, or production probe occurred.
