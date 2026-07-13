@@ -128,3 +128,21 @@ Result: `36 passed in 2.27s`.
 ```
 
 Result: `2 passed in 1.84s`.
+
+## Legacy idempotency fix addendum
+
+### TDD evidence
+
+- Added a regression that creates a pre-migration-style `AgentRun` with a matching `client_request_id` and `request_id=NULL`, then reuses it with a valid UUID. The same test verifies a non-null existing ID is never overwritten.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_idempotent_reuse_backfills_legacy_null_request_id_without_overwriting_existing_id -q
+  ```
+
+  Result: `1 failed`; the reused legacy row retained `request_id=None`.
+
+### Change and green verification
+
+- `create_research_run()` now backfills the normalized/generated UUID only when a reused run has `request_id is None`. Existing non-null IDs remain immutable under idempotent retries.
+- Green command: the same targeted test passed: `1 passed in 3.36s`.

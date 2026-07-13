@@ -70,6 +70,47 @@ def test_non_http_research_creation_and_replay_always_persist_valid_request_ids(
 
 
 @pytest.mark.django_db
+def test_idempotent_reuse_backfills_legacy_null_request_id_without_overwriting_existing_id():
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import create_research_run
+
+    legacy = AgentRun.objects.create(
+        kind=AgentRun.Kind.RAG,
+        client_request_id="legacy-null-request-id",
+        goal="迁移前运行",
+        trigger="research_api",
+        status=AgentRun.Status.QUEUED,
+        request_id=None,
+    )
+    supplied_request_id = uuid.uuid4()
+
+    reused, created = create_research_run(
+        "重试不覆盖原任务",
+        legacy.client_request_id,
+        request_id=supplied_request_id,
+    )
+
+    assert created is False
+    assert reused.id == legacy.id
+    assert reused.request_id == supplied_request_id
+
+    original_request_id = uuid.uuid4()
+    current = AgentRun.objects.create(
+        kind=AgentRun.Kind.RAG,
+        client_request_id="current-request-id",
+        request_id=original_request_id,
+    )
+    reused_current, current_created = create_research_run(
+        "重试保留原始关联",
+        current.client_request_id,
+        request_id=uuid.uuid4(),
+    )
+
+    assert current_created is False
+    assert reused_current.request_id == original_request_id
+
+
+@pytest.mark.django_db
 def test_execute_research_run_persists_trace_and_terminal_state(deadline_item, settings):
     settings.MEILISEARCH_URL = ""
     from agent_runtime.models import AgentRun, ToolInvocation
