@@ -568,6 +568,33 @@ def test_admission_key_creation_exhaustion_raises_sanitized_error(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_admission_key_exhaustion_returns_private_503_and_cleans_orphan(monkeypatch):
+    from agent_runtime.models import ResearchAdmissionKey
+    from agent_runtime.views import ResearchAdmissionUnavailable
+
+    client_request_id = "http-exhausted-admission-key"
+    ResearchAdmissionKey.objects.create(client_request_id=client_request_id)
+    monkeypatch.setattr(
+        "agent_runtime.views._get_research_admission_key",
+        lambda _client_request_id: (_ for _ in ()).throw(ResearchAdmissionUnavailable("internal retry details")),
+    )
+    request_id = str(uuid.uuid4())
+
+    response = Client().post(
+        "/api/v1/research-runs",
+        data=json.dumps({"goal": "不可用响应", "client_request_id": client_request_id}),
+        content_type="application/json",
+        HTTP_X_REQUEST_ID=request_id,
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "admission temporarily unavailable"}
+    assert response["X-Request-ID"] == request_id
+    assert "internal retry details" not in response.content.decode()
+    assert not ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).exists()
+
+
+@pytest.mark.django_db
 def test_anonymous_same_key_admission_lock_preserves_new_and_duplicate_responses(monkeypatch):
     from agent_runtime.models import ResearchAdmissionKey
 

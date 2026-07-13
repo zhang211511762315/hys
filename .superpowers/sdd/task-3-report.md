@@ -310,3 +310,21 @@ Result: `2 passed in 1.84s`.
 
 - `_get_research_admission_key()` now has a bounded three-attempt create/recover loop. A recovery `DoesNotExist` retries durable creation without sleeping; exhaustion raises only `RuntimeError("research admission key unavailable")`.
 - Green command: `2 passed in 1.88s`.
+
+## Admission-key exhaustion response fix addendum
+
+### TDD evidence
+
+- Added a request-level exhaustion regression that forces the admission-key helper unavailable while an orphan exists. It requires generic JSON `503`, preservation of `X-Request-ID`, no internal error text in the body, and race-safe orphan cleanup.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_admission_key_exhaustion_returns_private_503_and_cleans_orphan -q
+  ```
+
+  Result: `1 failed` with missing `ResearchAdmissionUnavailable`; exhaustion was still an unhandled runtime path.
+
+### Change and green verification
+
+- Added `ResearchAdmissionUnavailable`, raised only after the bounded helper exhausts. `research_runs` catches it, invokes fresh locked orphan cleanup, and returns `{ "error": "admission temporarily unavailable" }` with status `503`; correlation middleware continues to add the request-ID header.
+- Green command (including direct helper exhaustion): `2 passed in 1.86s`.

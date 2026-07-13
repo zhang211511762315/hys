@@ -41,6 +41,10 @@ RAG_SESSION_COOKIE = "rag_session_key"
 RAG_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
 
 
+class ResearchAdmissionUnavailable(RuntimeError):
+    pass
+
+
 @require_GET
 def ask(request):
     user = request.user if request.user.is_authenticated else None
@@ -491,6 +495,9 @@ def research_runs(request):
             break
         else:
             raise RuntimeError("research admission key recreation failed")
+    except ResearchAdmissionUnavailable:
+        _cleanup_orphan_research_admission_key(payload.client_request_id)
+        return JsonResponse({"error": "admission temporarily unavailable"}, status=503)
     except Exception:
         _cleanup_orphan_research_admission_key(payload.client_request_id)
         raise
@@ -606,7 +613,7 @@ def _get_research_admission_key(client_request_id: str) -> ResearchAdmissionKey:
                     return ResearchAdmissionKey.objects.get(client_request_id=client_request_id)
             except ResearchAdmissionKey.DoesNotExist:
                 continue
-    raise RuntimeError("research admission key unavailable")
+    raise ResearchAdmissionUnavailable("research admission key unavailable")
 
 
 def _cleanup_orphan_research_admission_key(client_request_id: str) -> None:
