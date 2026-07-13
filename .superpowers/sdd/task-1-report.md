@@ -78,7 +78,7 @@ Red tests were written before each corresponding implementation step:
 
 ## Commit
 
-- Focused Task 1 commit: pending final commit hash.
+- Focused implementation commit: `7df4d25`.
 
 ## Self-review and concerns
 
