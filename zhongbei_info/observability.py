@@ -14,8 +14,19 @@ def validated_request_id(value: str | None) -> str:
         return str(uuid.uuid4())
 
 
-def log_legacy_rag_runtime_created(request_id: str) -> None:
-    logger.info(json.dumps({"event": "legacy_rag_runtime.created", "request_id": request_id}))
+def log_legacy_rag_runtime_created(request_id: str, run_id: str) -> None:
+    logger.info(
+        json.dumps(
+            {
+                "request_id": request_id,
+                "run_id": run_id,
+                "method": "POST",
+                "path": "/ask/stream/",
+                "status": 102,
+                "duration_ms": 0,
+            }
+        )
+    )
 
 
 class CorrelationMiddleware:

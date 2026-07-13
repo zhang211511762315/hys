@@ -7,6 +7,7 @@ import json
 import re
 import secrets
 from typing import Iterable
+import uuid
 
 import httpx
 from django.conf import settings
@@ -315,7 +316,13 @@ def retrieve_contexts(query: str, limit: int | None = None) -> list[RagContext]:
     return _retrieve_contexts_from_db(query, limit)
 
 
-def answer_question_events(question: str, session_key: str | None = None, user=None) -> Iterable[dict]:
+def answer_question_events(
+    question: str,
+    session_key: str | None = None,
+    user=None,
+    request_id: str | uuid.UUID | None = None,
+    on_run_created=None,
+) -> Iterable[dict]:
     question = (question or "").strip()[:1000]
     session = None
     run = None
@@ -326,7 +333,17 @@ def answer_question_events(question: str, session_key: str | None = None, user=N
     contexts: list[RagContext] = []
     try:
         session = get_or_create_session(session_key, question, user=user)
-        run = AgentRun.objects.create(kind=AgentRun.Kind.RAG, trigger="ask_page")
+        try:
+            run_request_id = uuid.UUID(str(request_id)) if request_id else uuid.uuid4()
+        except (TypeError, ValueError, AttributeError):
+            run_request_id = uuid.uuid4()
+        run = AgentRun.objects.create(
+            kind=AgentRun.Kind.RAG,
+            trigger="ask_page",
+            request_id=run_request_id,
+        )
+        if on_run_created is not None:
+            on_run_created(run)
         retrieval_step = AgentStep.objects.create(
             run=run,
             name="retrieve_context",

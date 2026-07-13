@@ -116,6 +116,7 @@ def test_memory_export_contains_only_current_users_data_and_is_json_attachment()
     assert response.status_code == 200
     assert response["Content-Type"] == "application/json"
     assert response["Content-Disposition"] == 'attachment; filename="memory-export.json"'
+    assert response["Cache-Control"] == "no-store, private"
     payload = json.loads(response.content)
     assert [item["content"] for item in payload["memories"]] == ["我的导出内容"]
 
@@ -201,3 +202,15 @@ def test_long_term_memory_is_not_injected_into_rag_prompts(monkeypatch):
 
     assert prompts
     assert "long-term secret preference" not in prompts[0]
+
+
+@pytest.mark.django_db
+def test_authenticated_ask_page_exposes_explicit_memory_save_form():
+    user = get_user_model().objects.create_user(username="ask-memory", password="safe-test-password-123")
+    client = Client()
+    client.login(username="ask-memory", password="safe-test-password-123")
+
+    html = client.get("/ask/").content.decode()
+
+    assert 'action="/account/memory/save/"' in html
+    assert 'name="content"' in html

@@ -94,7 +94,6 @@ async def ask_stream(request):
     session_key = str(payload.get("session", "")).strip() or None
     if not question:
         return JsonResponse({"error": "missing question"}, status=400)
-    log_legacy_rag_runtime_created(request.request_id)
 
     def next_payload(iterator):
         try:
@@ -103,11 +102,17 @@ async def ask_stream(request):
             return None
 
     async def stream():
+        def on_run_created(run):
+            request.agent_run_id = str(run.public_id)
+            log_legacy_rag_runtime_created(request.request_id, request.agent_run_id)
+
         try:
             iterator = answer_question_events(
                 question,
                 session_key,
                 user=request.user if request.user.is_authenticated else None,
+                request_id=request.request_id,
+                on_run_created=on_run_created,
             )
         except Exception:
             yield sse_event({"type": "error", "message": "问答生成中断，请稍后重试或换个问法。"})
@@ -202,6 +207,7 @@ def account_memory_export(request):
     }
     response = HttpResponse(json.dumps(payload, ensure_ascii=False), content_type="application/json")
     response["Content-Disposition"] = 'attachment; filename="memory-export.json"'
+    response["Cache-Control"] = "no-store, private"
     return response
 
 

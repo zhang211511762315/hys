@@ -72,3 +72,32 @@ Production changes were preceded by focused tests and an observed red run.
 ## Notes
 
 - The test/check output includes an existing LangGraph pending-deprecation warning; it does not report a failure or this task's code path.
+
+## Review-fix addendum
+
+### TDD evidence
+
+Regression tests were added before the fixes for HTTPS redirects, authenticated export caching, authenticated ask-page memory saving, legacy streaming creation correlation, and non-HTTP legacy request IDs.
+
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_accounts.py::test_memory_export_contains_only_current_users_data_and_is_json_attachment agent_runtime/tests/test_accounts.py::test_authenticated_ask_page_exposes_explicit_memory_save_form agent_runtime/tests/test_research_runtime.py::test_streaming_ask_gets_correlation_header_and_safe_runtime_creation_log agent_runtime/tests/test_research_runtime.py::test_legacy_rag_runtime_gets_a_request_id_without_an_http_request agent_runtime/tests/test_research_runtime.py::test_https_redirect_has_correlation_header_and_completion_log -q
+  ```
+
+  Result: `5 failed`, as expected: no export cache directive, no ask-page save form, no post-creation legacy run correlation, legacy `AgentRun.request_id=None`, and HTTPS redirect without `X-Request-ID`.
+
+### Changes
+
+- Moved `CorrelationMiddleware` before `SecurityMiddleware`, so HTTPS redirects are assigned the validated request ID, header, and completion log.
+- Legacy RAG runtime creation now always assigns a valid UUID (supplied validated request ID when available; generated UUID for non-HTTP callers), persists it on `AgentRun`, invokes a post-creation callback, attaches `request.agent_run_id`, and emits the safe post-creation correlation record.
+- All structured JSON emitted by this correlation path use only the approved six fields: `request_id`, `run_id`, `method`, `path`, `status`, and `duration_ms`. The legacy creation record is an HTTP `102` safe record with zero duration; it contains no event name, goals, questions, memory text, or secrets.
+- Added `Cache-Control: no-store, private` to authenticated memory exports and an authenticated explicit-memory save form to the ask page.
+
+### Green verification
+
+```text
+/home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_accounts.py agent_runtime/tests/test_research_runtime.py -q
+```
+
+Result: `36 passed in 2.27s`.
