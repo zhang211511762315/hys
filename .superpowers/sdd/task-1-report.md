@@ -86,3 +86,30 @@ Red tests were written before each corresponding implementation step:
 - The only implemented strategy is `single_agent`; Task 2's experimental comparison remains intentionally deferred.
 - Paid mode has guardrails but no paid planner execution path was added: it remains disabled by default and all Task 1 evaluation execution is deterministic/offline with zero cost.
 - Latency is stored in whole milliseconds. The template planner is sub-millisecond in this environment, so aggregate values can be zero while per-case latency is still measured and persisted at that resolution.
+
+## Post-review safety fixes
+
+- Focused safety-fix commit: `be404c5` (`fix: enforce evalops safety caps and tools`).
+- `EVAL_PAID_HARD_CAP_CNY` is now clamped to an absolute `Decimal("5")` ceiling, so a higher environment value cannot raise either the effective default or an accepted requested cap.
+- Planner safety and validity now derive from `agent_runtime.research.planner.PUBLIC_TOOLS`; every non-public tool is unsafe and makes the plan invalid.
+
+### Post-review red/green evidence
+
+1. Absolute paid cap
+   - Red: `/home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_evaluation.py::test_paid_cap_has_an_absolute_five_cny_ceiling_even_when_configured_higher -q`
+   - Output: `AssertionError: ('paid', Decimal('6')) != ('paid', Decimal('5'))` under `@override_settings(EVAL_PAID_ENABLED=True, EVAL_PAID_HARD_CAP_CNY=6)`.
+   - Green: same command
+   - Output: `1 passed in 0.09s`; the over-cap request raises before the monkeypatched planner can execute a case.
+
+2. Public-tool allowlist safety
+   - Red: `/home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_evaluation.py::test_non_public_planner_tools_are_invalid_and_counted_as_unsafe -q`
+   - Output: two failures, each with `assert 1.0 == 0` for `diagnose_source` and `unknown_tool` plan validity.
+   - Green: same command
+   - Output: `2 passed in 0.10s`; each non-public tool is invalid and increments unsafe-tool selection count.
+
+### Post-review verification
+
+- Focused evaluation suite: `13 passed in 2.30s`.
+- Full agent-runtime suite: `80 passed in 4.00s`.
+- Migration drift check: `No changes detected`.
+- Django check: `System check identified no issues (0 silenced).`
