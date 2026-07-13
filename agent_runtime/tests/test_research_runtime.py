@@ -1,7 +1,10 @@
 import json
+import logging
+import uuid
 from uuid import uuid4
 
 import pytest
+from asgiref.sync import async_to_sync
 from django.core.cache import cache
 from django.test import Client
 from django.utils import timezone
@@ -107,6 +110,112 @@ def test_research_run_api_enqueues_once_for_same_client_request(monkeypatch):
     assert second.status_code == 200
     assert first.json()["run_id"] == second.json()["run_id"]
     assert calls == [str(AgentRun.objects.get().public_id)]
+
+
+@pytest.mark.django_db
+def test_research_request_ids_are_persisted_and_idempotent_reuse_keeps_original(monkeypatch, caplog):
+    from agent_runtime.models import AgentRun
+
+    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    caplog.set_level(logging.INFO, logger="zhongbei_info.observability")
+    client = Client()
+    original_request_id = str(uuid.uuid4())
+    retry_request_id = str(uuid.uuid4())
+    payload = {"goal": "查询关联 ID", "client_request_id": "correlation-request-01"}
+
+    first = client.post(
+        "/api/v1/research-runs",
+        data=json.dumps(payload),
+        content_type="application/json",
+        HTTP_X_REQUEST_ID=original_request_id,
+    )
+    second = client.post(
+        "/api/v1/research-runs",
+        data=json.dumps(payload),
+        content_type="application/json",
+        HTTP_X_REQUEST_ID=retry_request_id,
+    )
+
+    run = AgentRun.objects.get(public_id=first.json()["run_id"])
+    assert run.request_id == uuid.UUID(original_request_id)
+    assert second.json()["run_id"] == first.json()["run_id"]
+    assert run.request_id != uuid.UUID(retry_request_id)
+    records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "zhongbei_info.observability" and json.loads(record.getMessage()).get("path") == "/api/v1/research-runs"
+    ]
+    assert [record["run_id"] for record in records] == [str(run.public_id), str(run.public_id)]
+
+
+@pytest.mark.django_db
+def test_replay_persists_the_replay_request_id(monkeypatch):
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import create_research_run
+
+    original, _ = create_research_run("查询关联 ID", "replay-correlation-01")
+    replay_request_id = str(uuid.uuid4())
+    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+
+    response = Client().post(
+        f"/api/v1/research-runs/{original.public_id}/replay",
+        HTTP_X_REQUEST_ID=replay_request_id,
+    )
+
+    replay = AgentRun.objects.exclude(id=original.id).get()
+    assert response.status_code == 202
+    assert replay.request_id == uuid.UUID(replay_request_id)
+
+
+@pytest.mark.django_db
+def test_correlation_middleware_validates_ids_adds_headers_and_logs_only_allowlisted_fields(caplog):
+    request_id = str(uuid.uuid4())
+    caplog.set_level(logging.INFO, logger="zhongbei_info.observability")
+    client = Client()
+
+    valid = client.get("/healthz", HTTP_X_REQUEST_ID=request_id)
+    invalid = client.get("/missing-route", HTTP_X_REQUEST_ID="not-a-uuid")
+
+    assert valid["X-Request-ID"] == request_id
+    assert invalid.status_code == 404
+    assert uuid.UUID(invalid["X-Request-ID"])
+    completion_records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "zhongbei_info.observability"
+        and set(json.loads(record.getMessage())) == {"request_id", "run_id", "method", "path", "status", "duration_ms"}
+    ]
+    assert len(completion_records) == 2
+    assert completion_records[0]["request_id"] == request_id
+    assert completion_records[0]["run_id"] is None
+    assert completion_records[1]["status"] == 404
+
+
+@pytest.mark.django_db
+def test_streaming_ask_gets_correlation_header_and_safe_runtime_creation_log(monkeypatch, caplog):
+    request_id = str(uuid.uuid4())
+    caplog.set_level(logging.INFO, logger="zhongbei_info.observability")
+    monkeypatch.setattr(
+        "agent_runtime.views.answer_question_events",
+        lambda *_args, **_kwargs: iter([{"type": "done"}]),
+    )
+
+    response = Client().post(
+        "/ask/stream/",
+        data=json.dumps({"question": "private question must not be logged"}),
+        content_type="application/json",
+        HTTP_X_REQUEST_ID=request_id,
+    )
+    async def collect_stream():
+        return [chunk async for chunk in response.streaming_content]
+
+    async_to_sync(collect_stream)()
+
+    assert response["X-Request-ID"] == request_id
+    payloads = [json.loads(record.getMessage()) for record in caplog.records]
+    runtime_record = next(payload for payload in payloads if payload.get("event") == "legacy_rag_runtime.created")
+    assert runtime_record == {"event": "legacy_rag_runtime.created", "request_id": request_id}
+    assert all("private question must not be logged" not in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.django_db

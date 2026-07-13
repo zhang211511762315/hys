@@ -34,6 +34,7 @@ from .research.runtime import cancel_research_run, create_research_run, replay_r
 from .research.schemas import CreateResearchRunInput
 from .services import answer_question_events, cleanup_expired_memory, new_session_key, save_explicit_memory, sse_event
 from .tasks import execute_research_run_task
+from zhongbei_info.observability import log_legacy_rag_runtime_created
 
 RAG_SESSION_COOKIE = "rag_session_key"
 RAG_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
@@ -48,6 +49,8 @@ def ask(request):
         session_key = request.GET.get("session") or request.COOKIES.get(RAG_SESSION_COOKIE) or new_session_key()
 
     current_session = RagSession.objects.filter(session_key=session_key, user=user).first()
+    if user is not None and current_session is None:
+        session_key = new_session_key()
     history_messages = []
     history_questions = []
     if current_session is not None:
@@ -91,6 +94,7 @@ async def ask_stream(request):
     session_key = str(payload.get("session", "")).strip() or None
     if not question:
         return JsonResponse({"error": "missing question"}, status=400)
+    log_legacy_rag_runtime_created(request.request_id)
 
     def next_payload(iterator):
         try:
@@ -167,6 +171,47 @@ def account_privacy(request):
             "memory_retention_days": settings.MEMORY_RETENTION_DAYS,
         },
     )
+
+
+@login_required
+@require_POST
+def account_memory_save(request):
+    session_key = str(request.POST.get("session", "")).strip()
+    session = RagSession.objects.filter(session_key=session_key, user=request.user).first() if session_key else None
+    try:
+        save_explicit_memory(request.user, request.POST.get("content", ""), source_session=session)
+    except ValueError:
+        return redirect("agent_runtime:account_privacy")
+    return redirect("agent_runtime:account_privacy")
+
+
+@login_required
+@require_GET
+def account_memory_export(request):
+    memories = MemoryEntry.objects.filter(user=request.user).order_by("-created_at")
+    payload = {
+        "memories": [
+            {
+                "id": str(memory.public_id),
+                "content": memory.content,
+                "consented_at": memory.consented_at.isoformat(),
+                "expires_at": memory.expires_at.isoformat(),
+            }
+            for memory in memories
+        ]
+    }
+    response = HttpResponse(json.dumps(payload, ensure_ascii=False), content_type="application/json")
+    response["Content-Disposition"] = 'attachment; filename="memory-export.json"'
+    return response
+
+
+@login_required
+@require_POST
+def account_memory_delete(request, memory_id):
+    deleted, _ = MemoryEntry.objects.filter(public_id=memory_id, user=request.user).delete()
+    if not deleted:
+        return HttpResponse(status=404)
+    return redirect("agent_runtime:account_privacy")
 
 
 @login_required
@@ -368,9 +413,14 @@ def research_runs(request):
         ]
         if AgentRun.objects.filter(trigger=f"research_api:{client_ip}", status__in=active_statuses).count() >= settings.RESEARCH_AGENT_CONCURRENT_LIMIT:
             return JsonResponse({"error": "concurrent limit exceeded"}, status=429)
-        run, created = create_research_run(payload.goal, payload.client_request_id)
+        run, created = create_research_run(
+            payload.goal,
+            payload.client_request_id,
+            request_id=request.request_id,
+        )
         run.trigger = f"research_api:{client_ip}"
         run.save(update_fields=["trigger", "updated_at"])
+    request.agent_run_id = str(run.public_id)
     if created:
         execute_research_run_task.delay(str(run.public_id))
     return JsonResponse(
@@ -388,6 +438,7 @@ def cancel_research_run_view(request, run_id):
     run = AgentRun.objects.filter(public_id=run_id).first()
     if run is None:
         return JsonResponse({"error": "not found"}, status=404)
+    request.agent_run_id = str(run.public_id)
     cancelled = cancel_research_run(run)
     run.refresh_from_db()
     return JsonResponse({"run_id": str(run.public_id), "status": run.status, "cancelled": cancelled})
@@ -398,7 +449,8 @@ def replay_research_run_view(request, run_id):
     source = AgentRun.objects.filter(public_id=run_id).first()
     if source is None:
         return JsonResponse({"error": "not found"}, status=404)
-    replay = replay_research_run(source)
+    replay = replay_research_run(source, request_id=request.request_id)
+    request.agent_run_id = str(replay.public_id)
     execute_research_run_task.delay(str(replay.public_id))
     return JsonResponse(
         {
@@ -416,6 +468,7 @@ def research_run_detail(request, run_id):
     run = AgentRun.objects.filter(public_id=run_id).first()
     if run is None:
         return JsonResponse({"error": "not found"}, status=404)
+    request.agent_run_id = str(run.public_id)
     return JsonResponse(
         {
             "run_id": str(run.public_id),
@@ -432,6 +485,7 @@ def research_run_events(request, run_id):
     run = AgentRun.objects.filter(public_id=run_id).first()
     if run is None:
         return JsonResponse({"error": "not found"}, status=404)
+    request.agent_run_id = str(run.public_id)
     try:
         after = max(0, int(request.headers.get("Last-Event-ID") or request.GET.get("after") or 0))
     except ValueError:

@@ -29,7 +29,11 @@ def append_event(run: AgentRun, event_type: str, payload: dict[str, Any] | None 
         )
 
 
-def create_research_run(goal: str, client_request_id: str) -> tuple[AgentRun, bool]:
+def create_research_run(
+    goal: str,
+    client_request_id: str,
+    request_id: str | None = None,
+) -> tuple[AgentRun, bool]:
     normalized_id = (client_request_id or "").strip()[:120]
     if not normalized_id:
         raise ValueError("client_request_id is required")
@@ -41,6 +45,7 @@ def create_research_run(goal: str, client_request_id: str) -> tuple[AgentRun, bo
                 "goal": (goal or "").strip()[:1000],
                 "trigger": "research_api",
                 "status": AgentRun.Status.QUEUED,
+                "request_id": request_id,
             },
         )
         if created:
@@ -48,7 +53,7 @@ def create_research_run(goal: str, client_request_id: str) -> tuple[AgentRun, bo
     return run, created
 
 
-def replay_research_run(source: AgentRun) -> AgentRun:
+def replay_research_run(source: AgentRun, request_id: str | None = None) -> AgentRun:
     with transaction.atomic():
         replay = AgentRun.objects.create(
             kind=source.kind,
@@ -56,6 +61,7 @@ def replay_research_run(source: AgentRun) -> AgentRun:
             goal=source.goal,
             trigger="research_replay",
             status=AgentRun.Status.QUEUED,
+            request_id=request_id,
             graph_version=source.graph_version,
             prompt_version=source.prompt_version,
             replay_of=source,

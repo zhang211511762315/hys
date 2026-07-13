@@ -36,6 +36,7 @@ class AgentRun(TimeStampedModel):
     kind = models.CharField(max_length=40, choices=Kind.choices)
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     client_request_id = models.CharField(max_length=120, unique=True, null=True, blank=True)
+    request_id = models.UUIDField(null=True, blank=True, db_index=True, editable=False)
     goal = models.TextField(blank=True)
     trigger = models.CharField(max_length=120, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING)

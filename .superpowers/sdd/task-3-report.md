@@ -1,0 +1,74 @@
+# Task 3 — Memory lifecycle, account operations, and correlation logs
+
+## Scope
+
+- Worktree: `/home/ubuntu/hys/.worktrees/research-agent`
+- Scope held to the Task 3 brief: daily memory cleanup scheduling, authenticated memory account operations, strict user-scoped RAG session keys, request/run correlation, and safe completion/runtime logs.
+- No deployment, push, production-server action, network request, secret access, or external write was performed.
+
+## Delivered behavior
+
+- `ensure_fixed_crawl_schedules()` idempotently registers `cleanup-expired-agent-memory-daily` at 03:00 in `settings.TIME_ZONE`, with task exactly `agent_runtime.tasks.cleanup_expired_memory_task` and JSON empty args (`[]`).
+- The account privacy screen now supports explicit authenticated memory saving through `save_explicit_memory`, caller-only JSON download as `memory-export.json`, and POST-only deletion scoped to the current user. Existing `/api/v1/memory` behavior remains intact.
+- Authenticated optional RAG session keys are now strictly owner-scoped: another user's key cannot be adopted, read, or set as the current user's ask-page cookie. Anonymous short-lived sessions retain their existing behavior. Long-term `MemoryEntry` data is not added to RAG prompts automatically.
+- Added nullable indexed `AgentRun.request_id` with migration `0011_agentrun_request_id` after `0010`.
+- `CorrelationMiddleware` accepts only UUID request IDs (otherwise creates a server UUID), assigns `request.request_id`, returns `X-Request-ID` for normal, 404, and streaming responses, and emits one completion JSON record with exactly `request_id`, `run_id`, `method`, `path`, `status`, and `duration_ms`.
+- Research create/retry preserves the first run's request ID under idempotency; replay records the replay request ID. Known research runs are attached as `request.agent_run_id` for completion correlation. Legacy `/ask/stream/` produces a distinct safe runtime-creation JSON record containing only its event name and request ID.
+
+## TDD evidence
+
+Production changes were preceded by focused tests and an observed red run.
+
+1. Added the schedule, account save/export/delete, account session-isolation, research request/replay, middleware/header/404/log-whitelist, and streaming runtime-log tests.
+2. Initial invocation `pytest ...` could not start because `pytest` was absent from `PATH`; the repository virtualenv was then used without installing anything.
+3. Red command:
+
+   ```text
+   /home/ubuntu/hys/.venv/bin/python -m pytest aggregator/tests/test_schedule.py agent_runtime/tests/test_accounts.py agent_runtime/tests/test_research_runtime.py -q
+   ```
+
+   Result: `8 failed, 25 passed`. The failures were the intended missing daily schedule, account routes, `AgentRun.request_id`, correlation header/middleware, and safe streaming-log behavior.
+4. The additional authenticated ask-page foreign-session test was added before its corrective change and observed red:
+
+   ```text
+   /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_accounts.py::test_authenticated_ask_page_rejects_foreign_session_key -q
+   ```
+
+   Result: `1 failed`; the response set the foreign session key cookie. After the minimal owner-scope fix, the same test passed.
+
+## Verification
+
+- Focused suite:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest aggregator/tests/test_schedule.py agent_runtime/tests/test_accounts.py agent_runtime/tests/test_research_runtime.py -q
+  ```
+
+  Result: `35 passed`.
+- Full suite:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest -q
+  ```
+
+  Result: `190 passed`.
+- Django check:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python manage.py check --settings=zhongbei_info.settings_test
+  ```
+
+  Result: `System check identified no issues (0 silenced).`
+- Migration state check:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python manage.py makemigrations --check --dry-run --settings=zhongbei_info.settings_test
+  ```
+
+  Result: `No changes detected`.
+- Migration plan includes `agent_runtime.0011_agentrun_request_id` as `Add field request_id to agentrun`.
+- `git diff --check` completed without whitespace errors.
+
+## Notes
+
+- The test/check output includes an existing LangGraph pending-deprecation warning; it does not report a failure or this task's code path.

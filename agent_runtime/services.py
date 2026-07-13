@@ -96,9 +96,11 @@ def get_or_create_session(session_key: str | None, title: str = "", user=None) -
     now = timezone.now()
     expires_at = now + timezone.timedelta(days=max(1, settings.RAG_SESSION_RETENTION_DAYS))
     session = RagSession.objects.filter(session_key=key).first()
-    if session is not None and session.user_id and session.user_id != getattr(user, "id", None):
-        session = None
-        key = new_session_key()
+    if session is not None:
+        user_id = getattr(user, "id", None)
+        if session.user_id != user_id:
+            session = None
+            key = new_session_key()
     if session is None:
         session = RagSession.objects.create(session_key=key, title=title[:160], user=user, expires_at=expires_at)
     else:
