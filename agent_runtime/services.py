@@ -11,6 +11,7 @@ import uuid
 
 import httpx
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Q, Sum
 from django.urls import reverse
 from django.utils import timezone
@@ -31,6 +32,7 @@ from .models import (
     RagMessage,
     RagSession,
     MemoryEntry,
+    ResearchAdmissionKey,
 )
 from .graph import build_rag_graph
 from .schemas import RagAnswerSchema, SelfHealPlanSchema, UsageReportSchema
@@ -137,6 +139,26 @@ def cleanup_expired_memory(now=None) -> dict[str, int]:
     memory_deleted, _ = MemoryEntry.objects.filter(expires_at__lte=now).delete()
     session_deleted, _ = RagSession.objects.filter(expires_at__lte=now).delete()
     return {"memory_deleted": memory_deleted, "session_deleted": session_deleted}
+
+
+def cleanup_stale_research_admission_keys(now=None, minimum_age_seconds: int | None = None) -> int:
+    now = now or timezone.now()
+    minimum_age_seconds = minimum_age_seconds if minimum_age_seconds is not None else settings.RESEARCH_ADMISSION_KEY_STALE_SECONDS
+    stale_before = now - timezone.timedelta(seconds=max(1, minimum_age_seconds))
+    candidate_ids = list(
+        ResearchAdmissionKey.objects.filter(updated_at__lt=stale_before).values_list("id", flat=True)
+    )
+    deleted = 0
+    for key_id in candidate_ids:
+        with transaction.atomic():
+            key = ResearchAdmissionKey.objects.select_for_update().filter(id=key_id).first()
+            if key is None or key.updated_at >= stale_before:
+                continue
+            if AgentRun.objects.filter(client_request_id=key.client_request_id).exists():
+                continue
+            key.delete()
+            deleted += 1
+    return deleted
 
 
 def rebuild_rag_chunks(limit: int | None = None, sync_meili: bool = True) -> dict:

@@ -269,3 +269,25 @@ Result: `2 passed in 1.84s`.
 - The prior post-rejection recheck was removed. The mutex ensures a same-key anonymous retry waits for the first request's committed create or true rejection, then sees the resulting run or receives the same true `429` without creating a run.
 - New regression command: `5 passed in 2.00s`.
 - Focused research runtime suite: `37 passed in 2.32s`.
+
+## Admission-key storage bound fix addendum
+
+### TDD evidence
+
+- Updated true-rejection coverage to require deletion of its orphan key.
+- Added regressions for repeated rejected unique anonymous IDs, runtime exceptions, retry after a deleted rejected key, and stale-orphan cleanup preserving fresh/active and run-backed keys.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_anonymous_key_lock_rejects_true_quota_without_creating_a_run agent_runtime/tests/test_research_runtime.py::test_rejected_unique_anonymous_admissions_do_not_accumulate_keys agent_runtime/tests/test_research_runtime.py::test_exception_during_admission_cleans_up_orphan_key agent_runtime/tests/test_research_runtime.py::test_retry_after_true_rejection_recreates_key_and_creates_one_run agent_runtime/tests/test_research_runtime.py::test_stale_orphan_admission_key_cleanup_preserves_active_and_run_backed_keys -q
+  ```
+
+  Result: `4 failed`; true rejections and exceptions left admission-key rows, repeated rejected IDs accumulated keys, and stale cleanup did not exist.
+
+### Changes and green verification
+
+- A true quota/concurrency rejection deletes its already locked key only after confirming no AgentRun matches. Active admissions touch `updated_at` while holding the key lock.
+- Exceptions call a fresh-transaction orphan cleanup that locks/re-reads the key and deletes it only when no matching run exists. Waiters that received a now-deleted key retry durable key creation before admission.
+- Added `cleanup_stale_research_admission_keys()` and integrated it into the existing daily memory cleanup task. It locks/rechecks only keys older than `RESEARCH_ADMISSION_KEY_STALE_SECONDS` (default 300), preserving recent active and run-backed keys.
+- New regression command: `5 passed in 1.92s`.
+- Focused runtime/account suite: `52 passed in 2.45s`.

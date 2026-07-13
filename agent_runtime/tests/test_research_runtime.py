@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -429,7 +430,89 @@ def test_anonymous_key_lock_rejects_true_quota_without_creating_a_run(monkeypatc
 
     assert response.status_code == 429
     assert not AgentRun.objects.filter(client_request_id=client_request_id).exists()
+    assert not ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).exists()
+
+
+@pytest.mark.django_db
+def test_rejected_unique_anonymous_admissions_do_not_accumulate_keys(monkeypatch):
+    from agent_runtime.models import ResearchAdmissionKey
+
+    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", lambda _client_ip: False)
+    client = Client()
+
+    for index in range(5):
+        response = client.post(
+            "/api/v1/research-runs",
+            data=json.dumps({"goal": "超额请求", "client_request_id": f"rejected-key-{index}"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 429
+
+    assert ResearchAdmissionKey.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_exception_during_admission_cleans_up_orphan_key(monkeypatch):
+    from agent_runtime.models import ResearchAdmissionKey
+
+    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", lambda _client_ip: True)
+    monkeypatch.setattr(
+        "agent_runtime.views.create_research_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("runtime failed")),
+    )
+    client_request_id = "exception-admission-key"
+
+    with pytest.raises(RuntimeError, match="runtime failed"):
+        Client().post(
+            "/api/v1/research-runs",
+            data=json.dumps({"goal": "异常清理", "client_request_id": client_request_id}),
+            content_type="application/json",
+        )
+
+    assert not ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).exists()
+
+
+@pytest.mark.django_db
+def test_retry_after_true_rejection_recreates_key_and_creates_one_run(monkeypatch):
+    from agent_runtime.models import AgentRun, ResearchAdmissionKey
+
+    quota_results = iter([False, True])
+    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", lambda _client_ip: next(quota_results))
+    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    client_request_id = "retry-after-rejection"
+    payload = {"goal": "拒绝后重试", "client_request_id": client_request_id}
+
+    rejected = Client().post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
+    accepted = Client().post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
+
+    assert rejected.status_code == 429
+    assert accepted.status_code == 202
+    assert AgentRun.objects.filter(client_request_id=client_request_id).count() == 1
     assert ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).count() == 1
+
+
+@pytest.mark.django_db
+def test_stale_orphan_admission_key_cleanup_preserves_active_and_run_backed_keys():
+    from agent_runtime.models import AgentRun, ResearchAdmissionKey
+    from agent_runtime.services import cleanup_stale_research_admission_keys
+
+    stale_orphan = ResearchAdmissionKey.objects.create(client_request_id="stale-orphan-key")
+    fresh_orphan = ResearchAdmissionKey.objects.create(client_request_id="fresh-orphan-key")
+    backed_key = ResearchAdmissionKey.objects.create(client_request_id="run-backed-key")
+    AgentRun.objects.create(
+        kind=AgentRun.Kind.RAG,
+        client_request_id=backed_key.client_request_id,
+        request_id=uuid.uuid4(),
+    )
+    stale_at = timezone.now() - timedelta(seconds=301)
+    ResearchAdmissionKey.objects.filter(id__in=[stale_orphan.id, backed_key.id]).update(updated_at=stale_at)
+
+    deleted = cleanup_stale_research_admission_keys(now=timezone.now(), minimum_age_seconds=300)
+
+    assert deleted == 1
+    assert not ResearchAdmissionKey.objects.filter(id=stale_orphan.id).exists()
+    assert ResearchAdmissionKey.objects.filter(id=fresh_orphan.id).exists()
+    assert ResearchAdmissionKey.objects.filter(id=backed_key.id).exists()
 
 
 @pytest.mark.django_db

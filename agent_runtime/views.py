@@ -440,38 +440,60 @@ def research_runs(request):
     except Exception:
         return JsonResponse({"error": "invalid request"}, status=400)
     client_ip = _client_ip(request)
-    admission_key = _get_research_admission_key(payload.client_request_id)
-    admission_error = None
-    run = None
-    created = False
-    with transaction.atomic():
-        ResearchAdmissionKey.objects.select_for_update().get(pk=admission_key.pk)
-        if request.user.is_authenticated:
-            get_user_model().objects.select_for_update().get(pk=request.user.pk)
-        existing = AgentRun.objects.filter(client_request_id=payload.client_request_id).first()
-        if existing is None:
-            if not _consume_daily_research_quota(client_ip):
-                admission_error = "daily limit exceeded"
-            active_statuses = [
-                AgentRun.Status.QUEUED,
-                AgentRun.Status.PLANNING,
-                AgentRun.Status.EXECUTING,
-                AgentRun.Status.VERIFYING,
-                AgentRun.Status.RUNNING,
-            ]
-            if admission_error is None and AgentRun.objects.filter(trigger=f"research_api:{client_ip}", status__in=active_statuses).count() >= settings.RESEARCH_AGENT_CONCURRENT_LIMIT:
-                admission_error = "concurrent limit exceeded"
-        if admission_error is None:
-            run, created = create_research_run(
-                payload.goal,
-                payload.client_request_id,
-                request_id=request.request_id,
-            )
-            if created:
-                run.trigger = f"research_api:{client_ip}"
-                run.save(update_fields=["trigger", "updated_at"])
-    if admission_error is not None:
-        return JsonResponse({"error": admission_error}, status=429)
+    try:
+        for _ in range(2):
+            admission_key = _get_research_admission_key(payload.client_request_id)
+            admission_error = None
+            run = None
+            created = False
+            retry_admission_key = False
+            with transaction.atomic():
+                locked_key = (
+                    ResearchAdmissionKey.objects.select_for_update()
+                    .filter(pk=admission_key.pk)
+                    .first()
+                )
+                if locked_key is None:
+                    retry_admission_key = True
+                else:
+                    locked_key.updated_at = timezone.now()
+                    locked_key.save(update_fields=["updated_at"])
+                    if request.user.is_authenticated:
+                        get_user_model().objects.select_for_update().get(pk=request.user.pk)
+                    existing = AgentRun.objects.filter(client_request_id=payload.client_request_id).first()
+                    if existing is None:
+                        if not _consume_daily_research_quota(client_ip):
+                            admission_error = "daily limit exceeded"
+                        active_statuses = [
+                            AgentRun.Status.QUEUED,
+                            AgentRun.Status.PLANNING,
+                            AgentRun.Status.EXECUTING,
+                            AgentRun.Status.VERIFYING,
+                            AgentRun.Status.RUNNING,
+                        ]
+                        if admission_error is None and AgentRun.objects.filter(trigger=f"research_api:{client_ip}", status__in=active_statuses).count() >= settings.RESEARCH_AGENT_CONCURRENT_LIMIT:
+                            admission_error = "concurrent limit exceeded"
+                    if admission_error is None:
+                        run, created = create_research_run(
+                            payload.goal,
+                            payload.client_request_id,
+                            request_id=request.request_id,
+                        )
+                        if created:
+                            run.trigger = f"research_api:{client_ip}"
+                            run.save(update_fields=["trigger", "updated_at"])
+                    elif not AgentRun.objects.filter(client_request_id=payload.client_request_id).exists():
+                        locked_key.delete()
+            if retry_admission_key:
+                continue
+            if admission_error is not None:
+                return JsonResponse({"error": admission_error}, status=429)
+            break
+        else:
+            raise RuntimeError("research admission key recreation failed")
+    except Exception:
+        _cleanup_orphan_research_admission_key(payload.client_request_id)
+        raise
     request.agent_run_id = str(run.public_id)
     if created:
         execute_research_run_task.delay(str(run.public_id))
@@ -580,6 +602,17 @@ def _get_research_admission_key(client_request_id: str) -> ResearchAdmissionKey:
     except IntegrityError:
         with transaction.atomic():
             return ResearchAdmissionKey.objects.get(client_request_id=client_request_id)
+
+
+def _cleanup_orphan_research_admission_key(client_request_id: str) -> None:
+    with transaction.atomic():
+        key = (
+            ResearchAdmissionKey.objects.select_for_update()
+            .filter(client_request_id=client_request_id)
+            .first()
+        )
+        if key is not None and not AgentRun.objects.filter(client_request_id=client_request_id).exists():
+            key.delete()
 
 
 def _consume_daily_research_quota(client_ip: str) -> bool:
