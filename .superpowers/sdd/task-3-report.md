@@ -206,3 +206,23 @@ Result: `2 passed in 1.84s`.
 
 - New regression command: `2 passed in 2.06s`.
 - Focused research runtime suite: `/home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py -q` — `32 passed in 2.25s`.
+
+## HTTP admission serialization fix addendum
+
+### TDD evidence
+
+- Added an authenticated duplicate-admission regression that requires the current user row to be locked before a locking AgentRun lookup and verifies the duplicate skips quota admission.
+- Added an authenticated first-admission regression whose quota stub asserts that the user lock and current run lookup occur before quota evaluation, then verifies exactly one new run is created.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_authenticated_duplicate_admission_locks_user_then_current_run_and_skips_quota agent_runtime/tests/test_research_runtime.py::test_authenticated_first_admission_locks_before_quota_and_creates_once -q
+  ```
+
+  Result: `2 failed`; neither lock was held before duplicate/quota handling.
+
+### Change and green verification
+
+- Authenticated research admissions now hold a `select_for_update()` lock on only the calling user's row, then make a locking current lookup for the client request ID, perform quota/concurrency checks only when no run exists, and invoke the runtime authority while the admission lock is held. This serializes same-user first submissions without blocking unrelated users.
+- The response semantics remain unchanged: duplicates are `200`, new runs are `202`, and task enqueueing remains after the transaction commits.
+- Green command: the two admission regressions passed: `2 passed in 1.96s`.

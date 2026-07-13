@@ -9,6 +9,7 @@ from asgiref.sync import async_to_sync
 from django.core.cache import cache
 from django.db import IntegrityError
 from django.db.models.query import QuerySet
+from django.contrib.auth import get_user_model
 from django.test import Client
 from django.test.utils import override_settings
 from django.utils import timezone
@@ -328,6 +329,76 @@ def test_research_api_retry_backfills_legacy_null_request_correlation(monkeypatc
     assert response.status_code == 200
     assert response.json()["run_id"] == str(legacy.public_id)
     assert legacy.request_id == uuid.UUID(request_id)
+
+
+@pytest.mark.django_db
+def test_authenticated_duplicate_admission_locks_user_then_current_run_and_skips_quota(monkeypatch):
+    from agent_runtime.models import AgentRun
+
+    user = get_user_model().objects.create_user(username="idempotent-admission", password="safe-test-password-123")
+    run = AgentRun.objects.create(
+        kind=AgentRun.Kind.RAG,
+        client_request_id="admission-duplicate-request",
+        request_id=uuid.uuid4(),
+    )
+    locking_order = []
+    original_select_for_update = QuerySet.select_for_update
+
+    def observe_lock(queryset, *args, **kwargs):
+        if queryset.model in {get_user_model(), AgentRun}:
+            locking_order.append(queryset.model)
+        return original_select_for_update(queryset, *args, **kwargs)
+
+    monkeypatch.setattr(QuerySet, "select_for_update", observe_lock)
+    monkeypatch.setattr(
+        "agent_runtime.views._consume_daily_research_quota",
+        lambda _client_ip: (_ for _ in ()).throw(AssertionError("duplicate must skip quota admission")),
+    )
+    client = Client()
+    client.force_login(user)
+
+    response = client.post(
+        "/api/v1/research-runs",
+        data=json.dumps({"goal": "重复请求", "client_request_id": run.client_request_id}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == str(run.public_id)
+    assert locking_order[:2] == [get_user_model(), AgentRun]
+
+
+@pytest.mark.django_db
+def test_authenticated_first_admission_locks_before_quota_and_creates_once(monkeypatch):
+    from agent_runtime.models import AgentRun
+
+    user = get_user_model().objects.create_user(username="first-admission", password="safe-test-password-123")
+    locking_order = []
+    original_select_for_update = QuerySet.select_for_update
+
+    def observe_lock(queryset, *args, **kwargs):
+        if queryset.model in {get_user_model(), AgentRun}:
+            locking_order.append(queryset.model)
+        return original_select_for_update(queryset, *args, **kwargs)
+
+    def quota_after_locks(_client_ip):
+        assert locking_order[:2] == [get_user_model(), AgentRun]
+        return True
+
+    monkeypatch.setattr(QuerySet, "select_for_update", observe_lock)
+    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", quota_after_locks)
+    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    client = Client()
+    client.force_login(user)
+
+    response = client.post(
+        "/api/v1/research-runs",
+        data=json.dumps({"goal": "首次请求", "client_request_id": "admission-first-request"}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 202
+    assert AgentRun.objects.filter(client_request_id="admission-first-request").count() == 1
 
 
 @pytest.mark.django_db
