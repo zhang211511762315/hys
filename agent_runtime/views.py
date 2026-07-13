@@ -596,12 +596,17 @@ def _client_ip(request) -> str:
 
 
 def _get_research_admission_key(client_request_id: str) -> ResearchAdmissionKey:
-    try:
-        with transaction.atomic():
-            return ResearchAdmissionKey.objects.create(client_request_id=client_request_id)
-    except IntegrityError:
-        with transaction.atomic():
-            return ResearchAdmissionKey.objects.get(client_request_id=client_request_id)
+    for _ in range(3):
+        try:
+            with transaction.atomic():
+                return ResearchAdmissionKey.objects.create(client_request_id=client_request_id)
+        except IntegrityError:
+            try:
+                with transaction.atomic():
+                    return ResearchAdmissionKey.objects.get(client_request_id=client_request_id)
+            except ResearchAdmissionKey.DoesNotExist:
+                continue
+    raise RuntimeError("research admission key unavailable")
 
 
 def _cleanup_orphan_research_admission_key(client_request_id: str) -> None:

@@ -516,6 +516,58 @@ def test_stale_orphan_admission_key_cleanup_preserves_active_and_run_backed_keys
 
 
 @pytest.mark.django_db
+def test_admission_key_retries_when_duplicate_recovery_row_was_deleted(monkeypatch):
+    from agent_runtime.models import ResearchAdmissionKey
+    from agent_runtime.views import _get_research_admission_key
+
+    original_create = ResearchAdmissionKey.objects.create
+    original_get = ResearchAdmissionKey.objects.get
+    create_attempts = []
+    get_attempts = []
+
+    def create_after_first_duplicate(**kwargs):
+        create_attempts.append(True)
+        if len(create_attempts) == 1:
+            raise IntegrityError("duplicate key")
+        return original_create(**kwargs)
+
+    def missing_after_duplicate(**kwargs):
+        get_attempts.append(True)
+        if len(get_attempts) == 1:
+            raise ResearchAdmissionKey.DoesNotExist
+        return original_get(**kwargs)
+
+    monkeypatch.setattr(ResearchAdmissionKey.objects, "create", create_after_first_duplicate)
+    monkeypatch.setattr(ResearchAdmissionKey.objects, "get", missing_after_duplicate)
+
+    key = _get_research_admission_key("recreated-after-delete")
+
+    assert len(create_attempts) == 2
+    assert get_attempts == [True]
+    assert key.client_request_id == "recreated-after-delete"
+
+
+@pytest.mark.django_db
+def test_admission_key_creation_exhaustion_raises_sanitized_error(monkeypatch):
+    from agent_runtime.models import ResearchAdmissionKey
+    from agent_runtime.views import _get_research_admission_key
+
+    monkeypatch.setattr(
+        ResearchAdmissionKey.objects,
+        "create",
+        lambda **_kwargs: (_ for _ in ()).throw(IntegrityError("duplicate key")),
+    )
+    monkeypatch.setattr(
+        ResearchAdmissionKey.objects,
+        "get",
+        lambda **_kwargs: (_ for _ in ()).throw(ResearchAdmissionKey.DoesNotExist),
+    )
+
+    with pytest.raises(RuntimeError, match="research admission key unavailable"):
+        _get_research_admission_key("exhausted-admission-key")
+
+
+@pytest.mark.django_db
 def test_anonymous_same_key_admission_lock_preserves_new_and_duplicate_responses(monkeypatch):
     from agent_runtime.models import ResearchAdmissionKey
 

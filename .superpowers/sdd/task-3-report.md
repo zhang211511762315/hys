@@ -291,3 +291,22 @@ Result: `2 passed in 1.84s`.
 - Added `cleanup_stale_research_admission_keys()` and integrated it into the existing daily memory cleanup task. It locks/rechecks only keys older than `RESEARCH_ADMISSION_KEY_STALE_SECONDS` (default 300), preserving recent active and run-backed keys.
 - New regression command: `5 passed in 1.92s`.
 - Focused runtime/account suite: `52 passed in 2.45s`.
+
+## Admission-key deletion/recreation fix addendum
+
+### TDD evidence
+
+- Added a regression that simulates duplicate-key recovery followed by key deletion, then verifies durable creation retries and succeeds.
+- Added an exhaustion regression where every create collides and every recovery read is deleted; it requires a sanitized explicit error instead of raw `DoesNotExist`.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_admission_key_retries_when_duplicate_recovery_row_was_deleted agent_runtime/tests/test_research_runtime.py::test_admission_key_creation_exhaustion_raises_sanitized_error -q
+  ```
+
+  Result: `2 failed`; duplicate recovery surfaced `ResearchAdmissionKey.DoesNotExist` directly.
+
+### Change and green verification
+
+- `_get_research_admission_key()` now has a bounded three-attempt create/recover loop. A recovery `DoesNotExist` retries durable creation without sleeping; exhaustion raises only `RuntimeError("research admission key unavailable")`.
+- Green command: `2 passed in 1.88s`.
