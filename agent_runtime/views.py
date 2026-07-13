@@ -494,7 +494,7 @@ def research_runs(request):
                 return JsonResponse({"error": admission_error}, status=429)
             break
         else:
-            raise RuntimeError("research admission key recreation failed")
+            raise ResearchAdmissionUnavailable("research admission key unavailable")
     except ResearchAdmissionUnavailable:
         _cleanup_orphan_research_admission_key(payload.client_request_id)
         return JsonResponse({"error": "admission temporarily unavailable"}, status=503)

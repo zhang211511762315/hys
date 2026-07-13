@@ -328,3 +328,21 @@ Result: `2 passed in 1.84s`.
 
 - Added `ResearchAdmissionUnavailable`, raised only after the bounded helper exhausts. `research_runs` catches it, invokes fresh locked orphan cleanup, and returns `{ "error": "admission temporarily unavailable" }` with status `503`; correlation middleware continues to add the request-ID header.
 - Green command (including direct helper exhaustion): `2 passed in 1.86s`.
+
+## Deleted-before-lock exhaustion fix addendum
+
+### TDD evidence
+
+- Added a request regression that makes both admission-key helper attempts return a key deleted before the view can lock it. It requires generic `503`, a preserved request-ID header, no recreation detail, and no orphan key.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_deleted_before_lock_admission_key_exhaustion_returns_private_503 -q
+  ```
+
+  Result: `1 failed` with raw `RuntimeError("research admission key recreation failed")`.
+
+### Change and green verification
+
+- The exhausted outer key-recreation loop now raises `ResearchAdmissionUnavailable`, so it uses the same fresh orphan cleanup and private JSON `503` handler as helper exhaustion.
+- Green command (both exhaustion branches): `2 passed in 1.88s`.

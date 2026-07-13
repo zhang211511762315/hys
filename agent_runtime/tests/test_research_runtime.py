@@ -595,6 +595,37 @@ def test_admission_key_exhaustion_returns_private_503_and_cleans_orphan(monkeypa
 
 
 @pytest.mark.django_db
+def test_deleted_before_lock_admission_key_exhaustion_returns_private_503(monkeypatch):
+    from agent_runtime.models import ResearchAdmissionKey
+
+    client_request_id = "deleted-before-lock-key"
+    helper_calls = []
+
+    def return_deleted_key(_client_request_id):
+        key = ResearchAdmissionKey.objects.create(client_request_id=client_request_id)
+        helper_calls.append(key.id)
+        key.delete()
+        return key
+
+    monkeypatch.setattr("agent_runtime.views._get_research_admission_key", return_deleted_key)
+    request_id = str(uuid.uuid4())
+
+    response = Client().post(
+        "/api/v1/research-runs",
+        data=json.dumps({"goal": "锁前删除", "client_request_id": client_request_id}),
+        content_type="application/json",
+        HTTP_X_REQUEST_ID=request_id,
+    )
+
+    assert helper_calls and len(helper_calls) == 2
+    assert response.status_code == 503
+    assert response.json() == {"error": "admission temporarily unavailable"}
+    assert response["X-Request-ID"] == request_id
+    assert "recreation failed" not in response.content.decode()
+    assert not ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).exists()
+
+
+@pytest.mark.django_db
 def test_anonymous_same_key_admission_lock_preserves_new_and_duplicate_responses(monkeypatch):
     from agent_runtime.models import ResearchAdmissionKey
 
