@@ -101,3 +101,7 @@ Source verification: `aggregator/management/commands/ensure_crawl_schedules.py` 
 ## Follow-up: direct-plan completion state (2026-07-13)
 
 `docs/superpowers/plans/2026-07-13-direct-completion.md` now marks the completed, locally reviewed code items in Tasks 1–4 as complete. The Task 4 external re-crawl/acknowledgement remains pending. Task 5 keeps the privileged restore/ACME verification and target-environment Compose, CI, deployment, migration, schedule, and production-probe work unchecked. This documentation-only update does not claim that any server, deployment, certificate, backup, or production probe occurred.
+
+## Follow-up: stale admission-key configuration (2026-07-13)
+
+`.env.example` and the deployment runbook now include `RESEARCH_ADMISSION_KEY_STALE_SECONDS=300`. Source verification: `cleanup_stale_research_admission_keys()` considers only keys older than that setting and deletes one only when no `AgentRun` has the same `client_request_id`; AgentRun-backed admission keys are retained. The daily memory-cleanup task invokes this orphan-key cleanup. Focused local verification: `agent_runtime/tests/test_research_runtime.py::test_stale_orphan_admission_key_cleanup_preserves_active_and_run_backed_keys` passed. This is documentation/config coverage only and does not change deployment status or claim the scheduled task has run in production.
