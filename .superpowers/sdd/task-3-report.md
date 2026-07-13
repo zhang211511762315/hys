@@ -146,3 +146,21 @@ Result: `2 passed in 1.84s`.
 
 - `create_research_run()` now backfills the normalized/generated UUID only when a reused run has `request_id is None`. Existing non-null IDs remain immutable under idempotent retries.
 - Green command: the same targeted test passed: `1 passed in 3.36s`.
+
+## Concurrent legacy-backfill fix addendum
+
+### TDD evidence
+
+- Added a race-path regression that simulates a competing retry setting a legacy NULL row's request ID immediately before this retry's conditional update. It asserts the current retry observes the competing immutable ID.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_legacy_null_request_id_backfill_observes_the_concurrent_winner -q
+  ```
+
+  Result: `1 failed`; the prior plain model save did not enter a conditional compare-and-set path.
+
+### Change and green verification
+
+- Replaced the legacy NULL backfill save with `UPDATE ... WHERE request_id IS NULL`, then refreshes the run from the database. Exactly one retry can set the previously NULL value; competing retries read that winner. Existing non-null values remain untouched.
+- Green command: the same race-path test passed: `1 passed in 2.40s`.

@@ -59,8 +59,11 @@ def create_research_run(
         if created:
             append_event(run, "run.created", {"status": AgentRun.Status.QUEUED})
         elif run.request_id is None:
-            run.request_id = run_request_id
-            run.save(update_fields=["request_id", "updated_at"])
+            AgentRun.objects.filter(id=run.id, request_id__isnull=True).update(
+                request_id=run_request_id,
+                updated_at=timezone.now(),
+            )
+            run.refresh_from_db(fields=["request_id"])
     return run, created
 
 

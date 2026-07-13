@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
+from django.db.models.query import QuerySet
 from django.test import Client
 from django.test.utils import override_settings
 from django.utils import timezone
@@ -108,6 +109,43 @@ def test_idempotent_reuse_backfills_legacy_null_request_id_without_overwriting_e
 
     assert current_created is False
     assert reused_current.request_id == original_request_id
+
+
+@pytest.mark.django_db
+def test_legacy_null_request_id_backfill_observes_the_concurrent_winner(monkeypatch):
+    from agent_runtime.models import AgentRun
+    from agent_runtime.research.runtime import create_research_run
+
+    legacy = AgentRun.objects.create(
+        kind=AgentRun.Kind.RAG,
+        client_request_id="racing-legacy-request-id",
+        request_id=None,
+    )
+    concurrent_winner = uuid.uuid4()
+    losing_retry_id = uuid.uuid4()
+    original_update = QuerySet.update
+    compared_and_set = []
+
+    def race_before_compare_and_set(queryset, **kwargs):
+        if queryset.model is AgentRun and kwargs.get("request_id") == losing_retry_id:
+            compared_and_set.append(True)
+            original_update(
+                AgentRun.objects.filter(id=legacy.id, request_id__isnull=True),
+                request_id=concurrent_winner,
+            )
+        return original_update(queryset, **kwargs)
+
+    monkeypatch.setattr(QuerySet, "update", race_before_compare_and_set)
+
+    reused, created = create_research_run(
+        "竞争重试",
+        legacy.client_request_id,
+        request_id=losing_retry_id,
+    )
+
+    assert created is False
+    assert compared_and_set == [True]
+    assert reused.request_id == concurrent_winner
 
 
 @pytest.mark.django_db
