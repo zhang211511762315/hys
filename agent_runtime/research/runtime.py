@@ -17,6 +17,13 @@ from .tools import build_default_registry
 from .workflow import build_research_graph
 
 
+def normalized_request_id(request_id: str | uuid.UUID | None = None) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(request_id)) if request_id else uuid.uuid4()
+    except (TypeError, ValueError, AttributeError):
+        return uuid.uuid4()
+
+
 def append_event(run: AgentRun, event_type: str, payload: dict[str, Any] | None = None) -> AgentEvent:
     with transaction.atomic():
         locked_run = AgentRun.objects.select_for_update().get(id=run.id)
@@ -32,11 +39,12 @@ def append_event(run: AgentRun, event_type: str, payload: dict[str, Any] | None 
 def create_research_run(
     goal: str,
     client_request_id: str,
-    request_id: str | None = None,
+    request_id: str | uuid.UUID | None = None,
 ) -> tuple[AgentRun, bool]:
     normalized_id = (client_request_id or "").strip()[:120]
     if not normalized_id:
         raise ValueError("client_request_id is required")
+    run_request_id = normalized_request_id(request_id)
     with transaction.atomic():
         run, created = AgentRun.objects.get_or_create(
             client_request_id=normalized_id,
@@ -45,7 +53,7 @@ def create_research_run(
                 "goal": (goal or "").strip()[:1000],
                 "trigger": "research_api",
                 "status": AgentRun.Status.QUEUED,
-                "request_id": request_id,
+                "request_id": run_request_id,
             },
         )
         if created:
@@ -53,7 +61,11 @@ def create_research_run(
     return run, created
 
 
-def replay_research_run(source: AgentRun, request_id: str | None = None) -> AgentRun:
+def replay_research_run(
+    source: AgentRun,
+    request_id: str | uuid.UUID | None = None,
+) -> AgentRun:
+    run_request_id = normalized_request_id(request_id)
     with transaction.atomic():
         replay = AgentRun.objects.create(
             kind=source.kind,
@@ -61,7 +73,7 @@ def replay_research_run(source: AgentRun, request_id: str | None = None) -> Agen
             goal=source.goal,
             trigger="research_replay",
             status=AgentRun.Status.QUEUED,
-            request_id=request_id,
+            request_id=run_request_id,
             graph_version=source.graph_version,
             prompt_version=source.prompt_version,
             replay_of=source,

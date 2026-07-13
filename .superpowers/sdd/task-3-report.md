@@ -101,3 +101,30 @@ Regression tests were added before the fixes for HTTPS redirects, authenticated 
 ```
 
 Result: `36 passed in 2.27s`.
+
+## Re-review fix addendum
+
+### TDD evidence
+
+- Added `test_non_http_research_creation_and_replay_always_persist_valid_request_ids` before changing the runtime boundary. It covers the management-command-style omitted ID path, an invalid supplied value, and replay with omitted/invalid IDs.
+- Updated the legacy streaming lifecycle regression to require a separately named lifecycle logger with a JSON payload containing only `request_id` and `run_id`, rather than a synthetic HTTP `102` record.
+- Red command:
+
+  ```text
+  /home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_non_http_research_creation_and_replay_always_persist_valid_request_ids agent_runtime/tests/test_research_runtime.py::test_streaming_ask_gets_correlation_header_and_safe_runtime_creation_log -q
+  ```
+
+  Result: `2 failed`. `create_research_run()` persisted `NULL` for omitted IDs and rejected invalid IDs; legacy creation telemetry was still an HTTP-logger `102` record.
+
+### Changes and rationale
+
+- Added `normalized_request_id()` at the research-runtime boundary. `create_research_run()` and `replay_research_run()` now always persist a supplied valid UUID or a server-generated UUID, including management-command callers.
+- Legacy runtime creation now logs through `zhongbei_info.observability.lifecycle`, separate from HTTP completion telemetry. Its JSON payload is limited to `request_id` and `run_id`; it has no synthetic HTTP status, path, method, duration, event name, or user content. The normal middleware remains the sole HTTP response-status completion log.
+
+### Green verification
+
+```text
+/home/ubuntu/hys/.venv/bin/python -m pytest agent_runtime/tests/test_research_runtime.py::test_non_http_research_creation_and_replay_always_persist_valid_request_ids agent_runtime/tests/test_research_runtime.py::test_streaming_ask_gets_correlation_header_and_safe_runtime_creation_log -q
+```
+
+Result: `2 passed in 1.84s`.

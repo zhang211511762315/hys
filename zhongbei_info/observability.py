@@ -5,6 +5,7 @@ import uuid
 
 
 logger = logging.getLogger(__name__)
+lifecycle_logger = logging.getLogger(f"{__name__}.lifecycle")
 
 
 def validated_request_id(value: str | None) -> str:
@@ -15,18 +16,7 @@ def validated_request_id(value: str | None) -> str:
 
 
 def log_legacy_rag_runtime_created(request_id: str, run_id: str) -> None:
-    logger.info(
-        json.dumps(
-            {
-                "request_id": request_id,
-                "run_id": run_id,
-                "method": "POST",
-                "path": "/ask/stream/",
-                "status": 102,
-                "duration_ms": 0,
-            }
-        )
-    )
+    lifecycle_logger.info(json.dumps({"request_id": request_id, "run_id": run_id}))
 
 
 class CorrelationMiddleware:

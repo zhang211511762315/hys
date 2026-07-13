@@ -53,6 +53,23 @@ def test_create_research_run_is_idempotent():
 
 
 @pytest.mark.django_db
+def test_non_http_research_creation_and_replay_always_persist_valid_request_ids():
+    from agent_runtime.research.runtime import create_research_run, replay_research_run
+
+    run, _ = create_research_run("管理命令风格的研究运行", "repair-command-request")
+    invalid_run, _ = create_research_run(
+        "无效请求 ID 仍由服务器生成",
+        "invalid-runtime-request",
+        request_id="not-a-uuid",
+    )
+    replay_without_id = replay_research_run(run)
+    replay_with_invalid_id = replay_research_run(run, request_id="not-a-uuid")
+
+    for candidate in (run, invalid_run, replay_without_id, replay_with_invalid_id):
+        assert isinstance(candidate.request_id, uuid.UUID)
+
+
+@pytest.mark.django_db
 def test_execute_research_run_persists_trace_and_terminal_state(deadline_item, settings):
     settings.MEILISEARCH_URL = ""
     from agent_runtime.models import AgentRun, ToolInvocation
@@ -219,14 +236,17 @@ def test_streaming_ask_gets_correlation_header_and_safe_runtime_creation_log(mon
     async_to_sync(collect_stream)()
 
     assert response["X-Request-ID"] == expected_request_id
+    lifecycle_records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "zhongbei_info.observability.lifecycle"
+    ]
+    assert lifecycle_records == [{"request_id": expected_request_id, "run_id": run_id}]
     payloads = [
         json.loads(record.getMessage())
         for record in caplog.records
         if record.name == "zhongbei_info.observability"
     ]
-    runtime_record = next(payload for payload in payloads if payload.get("run_id") == run_id and payload.get("status") == 102)
-    assert set(runtime_record) == {"request_id", "run_id", "method", "path", "status", "duration_ms"}
-    assert runtime_record["request_id"] == expected_request_id
     completion_record = next(
         payload
         for payload in payloads
