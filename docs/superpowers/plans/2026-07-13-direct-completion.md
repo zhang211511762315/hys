@@ -56,7 +56,7 @@
 - [x] Add explicit acknowledgement metadata only for permanent failures. A newly observed failure clears a prior acknowledgement.
 - [x] Calculate health gates from actionable unresolved failures and expose acknowledged permanent counts separately.
 - [x] Provide a dry-run-first operator command that can acknowledge only specified permanent failures with an audit note; it must not suppress network or transient failures.
-- [ ] After deployment, re-crawl the now-reachable official and employment sources, then acknowledge only the externally rechecked 404 records for the education and continuing-education sources.
+- [x] After deployment, re-crawl the now-reachable official and employment sources, then acknowledge only the externally rechecked 404 records for the education and continuing-education sources. (Completed 2026-07-14; source health is green with the remaining expired employment notice still visible.)
 
 ### Task 5: Operational verification and delivery
 

@@ -7,7 +7,7 @@ This runbook distinguishes repository implementation from server operations.
 - **Implemented and locally verified:** the offline EvalOps baseline and comparison gate, opt-in memory lifecycle and account privacy controls, request/run correlation, crawl-failure acknowledgement rules, source-health fields, readiness, and loopback-only metrics. Local tests cover their contracts; this is not evidence of production availability or performance.
 - **Privileged server verification completed 2026-07-14:** the latest checksum-valid backup was restored in the script's auto-cleaned temporary MySQL container, and the staging ACME webroot renewal dry-run completed without replacing the live certificate.
 - **Production deployment verified 2026-07-14:** GitHub CI passed, merge commit `d97c62e` was deployed, migrations and fixed Beat schedules were applied, both public domains and the main/Ask/Research/readiness/health routes returned HTTP 200, public metrics returned 403 while the Nginx-local probe returned 200, the runtime smoke gate passed, and the 200-case offline comparison persisted successfully.
-- **Still pending production evidence:** observe the next scheduled 03:00 memory-cleanup execution and finish the audited crawl-failure reconciliation described below. These are not implied by successful schedule registration or route probes.
+- **Still pending production evidence:** observe the next automatic 03:00 memory-cleanup execution. The task itself was manually queued and completed successfully on 2026-07-14 with zero expired rows; this does not masquerade as proof of a Beat-triggered run.
 - **Externally blocked:** semantic embeddings require separately supplied provider credentials; paid evaluation requires explicit authorization and credentials; human review is required before making any answer-quality claim. None of these capabilities is enabled by the defaults below.
 
 ## Preflight
@@ -95,6 +95,8 @@ docker compose exec -T web python manage.py recheck_crawl_failures 123 --apply
 ```
 
 A successful recheck resolves that URL; a failed recheck records the newly observed error and HTTP status. Review the result before using the separate acknowledgement command.
+
+The 2026-07-14 production reconciliation recovered 23 stale jobs, rechecked the affected official URLs, resolved recovered employment API endpoints only after valid JSON responses, and acknowledged two independently confirmed official HTTP 404 records. Health then reported three visible permanent failures, one actionable failure, two acknowledged failures, no alert, and no open job.
 
 For the production HTTPS deployment, place the Let's Encrypt material at
 `/etc/letsencrypt/live/schoolsearchzzychen.online/` and allow inbound TCP 80
