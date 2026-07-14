@@ -10,7 +10,7 @@
 
 ## Implementation status (2026-07-13)
 
-The direct-completion work implemented and locally verified the offline EvalOps baseline/comparison, memory lifecycle and correlation controls, and crawl acknowledgement/source-health behavior described below. This status does **not** mean the production deployment is complete: restore proof, staging ACME verification, Compose/CI/deployment, migrations, and target-environment probes remain pending. Embeddings, paid evaluation, and human answer-quality review remain externally blocked by missing credentials, authorization, or reviewers.
+The direct-completion work implemented and locally verified the offline EvalOps baseline/comparison, memory lifecycle and correlation controls, and crawl acknowledgement/source-health behavior described below. The latest backup restore proof and staging ACME renewal dry-run completed on 2026-07-14. This status does **not** mean the production deployment is complete: CI/deployment, migrations, and target-environment probes remain pending. Embeddings, paid evaluation, and human answer-quality review remain externally blocked by missing credentials, authorization, or reviewers.
 
 `campus-research-v2` is an engineering-reviewed, deterministic 200-case planner baseline, not a human answer-quality benchmark. Paid evaluation remains disabled by default and is capped at 5 CNY; the experimental multi-Agent strategy remains controlled evaluation-only.
 
@@ -56,8 +56,8 @@ The direct-completion work implemented and locally verified the offline EvalOps 
 
 ### Task 6: Production secret, certificate, and backup operations
 
-- [x] Add webroot-based ACME renewal and a systemd timer runbook. (Installation and staging renewal verification remain privileged server operations.)
-- [x] Add root-only compressed backup, checksum, retention, and temporary-container restore verification scripts. (A restore proof against a current backup remains a privileged server operation.)
+- [x] Add webroot-based ACME renewal and a systemd timer runbook. (Staging renewal dry-run completed successfully on 2026-07-14 without replacing the live certificate.)
+- [x] Add root-only compressed backup, checksum, retention, and temporary-container restore verification scripts. (The latest checksum-valid backup was restored successfully in an auto-cleaned temporary container on 2026-07-14.)
 - [ ] Document and execute staged credential rotation only after safe server-local secret values are supplied.
 
 ### Task 7: EvalOps and experimental multi-Agent comparison

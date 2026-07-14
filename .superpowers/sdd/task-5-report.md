@@ -4,7 +4,7 @@
 
 - Worktree: `/home/ubuntu/hys/.worktrees/research-agent`
 - Scope completed: repository-editable documentation and configuration examples only.
-- Explicitly not performed: Docker or Compose invocation, sudo, production access, deployment, push, external CI, backup restore, ACME/certificate commands, paid evaluation, remote embedding calls, or human content review.
+- At the time of the documentation implementation, Docker/Compose, sudo, production access, deployment, push, external CI, backup restore, ACME commands, paid evaluation, remote embedding calls, and human content review had not been performed. The later privileged verification addendum below records the restore and ACME checks completed on 2026-07-14.
 - No credentials, certificate material, dumps, tokens, or other secrets were read, written, or included in this report.
 
 ## Files changed
@@ -68,10 +68,10 @@ All commands below were run in the repository worktree with `/home/ubuntu/hys/.v
 - Offline EvalOps v2 dataset/guard behavior, strategy gate contracts, privacy/memory controls, correlation logging contracts, crawl acknowledgement validation, source-health fields, readiness, and internal metrics restrictions are covered by the local suite above.
 - The documentation now describes the behavior that is present in source code and distinguishes it from operations that need server access.
 
-### Pending privileged server verification
+### Privileged server verification completed 2026-07-14
 
-- Run `deploy/scripts/verify_mysql_restore.sh` against the latest checksum-valid server backup and retain only the safe timestamp/checksum outcome in the server operations log.
-- Run an approved staging ACME webroot renewal dry-run that cannot modify the live certificate and record the safe result.
+- The checksum sidecar for `/var/backups/hys/hys-mysql-20260712T193401Z.sql.gz` verified successfully. The archive was restored into an auto-cleaned temporary MySQL 8.4 container, and the expected `zhongbei_info.aggregator_contentitem` table was verified.
+- `certbot renew --dry-run --webroot -w /var/www/certbot` completed successfully against the staging service. The command did not replace the live certificate.
 
 ### Pending deployment and production probes
 
