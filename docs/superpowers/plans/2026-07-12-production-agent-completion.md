@@ -51,7 +51,7 @@ The direct-completion work implemented and verified the offline EvalOps baseline
 
 - [x] Add readiness and localhost-only Prometheus metrics endpoints. (Production probes returned 403 publicly and 200 from inside Nginx.)
 - [x] Add JSON request/run correlation. (Implemented, tested, and present in production response/log probes.)
-- [ ] Add scheduled external GitHub route/certificate probes.
+- [x] Add scheduled external GitHub route/certificate probes. (`site-monitor.yml` probes both domains, public routes, HTTPS/TLS, and 21-day certificate validity twice hourly; scheduled runs were succeeding on 2026-07-14.)
 - [x] Add source freshness thresholds and actionable health reporting. (Implemented and locally verified; real-source review remains pending.)
 
 ### Task 6: Production secret, certificate, and backup operations
