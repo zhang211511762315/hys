@@ -34,6 +34,8 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 docker exec "${container}" mysqladmin ping -uroot -p"${restore_password}" --silent >/dev/null
-gunzip -c "${archive}" | docker exec -i "${container}" mysql -uroot -p"${restore_password}"
+docker exec "${container}" mysql -uroot -p"${restore_password}" \
+  -e 'CREATE DATABASE IF NOT EXISTS `zhongbei_info` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+gunzip -c "${archive}" | docker exec -i "${container}" mysql -uroot -p"${restore_password}" zhongbei_info
 docker exec "${container}" mysql -N -uroot -p"${restore_password}" -e 'SHOW DATABASES' | grep -qx 'zhongbei_info'
 docker exec "${container}" mysql -N -uroot -p"${restore_password}" zhongbei_info -e 'SHOW TABLES' | grep -qx 'aggregator_contentitem'

@@ -128,6 +128,11 @@ def test_backup_scripts_use_transactional_dump_and_temporary_restore_container()
     assert "sha256sum" in backup
     assert "MYSQL_ROOT_PASSWORD" in restore
     assert "trap cleanup EXIT" in restore
+    assert "CREATE DATABASE IF NOT EXISTS `zhongbei_info`" in restore
+    assert (
+        'gunzip -c "${archive}" | docker exec -i "${container}" '
+        'mysql -uroot -p"${restore_password}" zhongbei_info'
+    ) in restore
 
 
 @pytest.mark.django_db
