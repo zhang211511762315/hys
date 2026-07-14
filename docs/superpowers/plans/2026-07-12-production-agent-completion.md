@@ -8,9 +8,9 @@
 
 **Tech Stack:** Django 5.2, Celery, MySQL, Redis, Meilisearch, Prometheus client, Docker Compose, pytest.
 
-## Implementation status (2026-07-13)
+## Implementation status (2026-07-14)
 
-The direct-completion work implemented and locally verified the offline EvalOps baseline/comparison, memory lifecycle and correlation controls, and crawl acknowledgement/source-health behavior described below. The latest backup restore proof and staging ACME renewal dry-run completed on 2026-07-14. This status does **not** mean the production deployment is complete: CI/deployment, migrations, and target-environment probes remain pending. Embeddings, paid evaluation, and human answer-quality review remain externally blocked by missing credentials, authorization, or reviewers.
+The direct-completion work implemented and verified the offline EvalOps baseline/comparison, memory lifecycle and correlation controls, and crawl acknowledgement/source-health behavior described below. The latest backup restore proof and staging ACME renewal dry-run completed on 2026-07-14. GitHub CI passed and merge commit `d97c62e` was deployed with migrations, schedule registration, public-route/readiness/metrics probes, runtime smoke, and an offline 200-case comparison. Observation of the next scheduled cleanup and final crawl-failure reconciliation remain pending. Embeddings, paid evaluation, and human answer-quality review remain externally blocked by missing credentials, authorization, or reviewers.
 
 `campus-research-v2` is an engineering-reviewed, deterministic 200-case planner baseline, not a human answer-quality benchmark. Paid evaluation remains disabled by default and is capped at 5 CNY; the experimental multi-Agent strategy remains controlled evaluation-only.
 
@@ -34,7 +34,7 @@ The direct-completion work implemented and locally verified the offline EvalOps 
 
 - [x] Add username/password registration, login, logout, password change, and account deletion. (Implemented; production flow remains to be probed.)
 - [x] Add opt-in long-term memory for authenticated users, with 180-day retention, export, and deletion. (Implemented and locally verified; not automatically inserted into prompts.)
-- [x] Add a daily cleanup task for expired anonymous sessions and memory entries. (Beat registration is implemented and locally tested; scheduled execution remains a deployment probe.)
+- [x] Add a daily cleanup task for expired anonymous sessions and memory entries. (The 03:00 Asia/Shanghai Beat row is registered in production; observation of its next scheduled execution remains pending.)
 
 ### Task 3: Tool runtime policy and traces
 
@@ -49,8 +49,8 @@ The direct-completion work implemented and locally verified the offline EvalOps 
 
 ### Task 5: Lightweight observability and source-health gates
 
-- [x] Add readiness and localhost-only Prometheus metrics endpoints. (Implemented and locally verified; target-host restriction probe remains pending.)
-- [x] Add JSON request/run correlation. (Implemented and locally verified; production log/trace inspection remains pending.)
+- [x] Add readiness and localhost-only Prometheus metrics endpoints. (Production probes returned 403 publicly and 200 from inside Nginx.)
+- [x] Add JSON request/run correlation. (Implemented, tested, and present in production response/log probes.)
 - [ ] Add scheduled external GitHub route/certificate probes.
 - [x] Add source freshness thresholds and actionable health reporting. (Implemented and locally verified; real-source review remains pending.)
 

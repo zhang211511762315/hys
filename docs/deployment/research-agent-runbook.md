@@ -6,7 +6,8 @@ This runbook distinguishes repository implementation from server operations.
 
 - **Implemented and locally verified:** the offline EvalOps baseline and comparison gate, opt-in memory lifecycle and account privacy controls, request/run correlation, crawl-failure acknowledgement rules, source-health fields, readiness, and loopback-only metrics. Local tests cover their contracts; this is not evidence of production availability or performance.
 - **Privileged server verification completed 2026-07-14:** the latest checksum-valid backup was restored in the script's auto-cleaned temporary MySQL container, and the staging ACME webroot renewal dry-run completed without replacing the live certificate.
-- **Pending deployment and production probes:** Compose validation, CI, deployment of the reviewed commit, migrations, public-route/readiness/metrics checks, Beat cleanup observation, the EvalOps command, and source-health review must be run on the target environment and recorded there.
+- **Production deployment verified 2026-07-14:** GitHub CI passed, merge commit `d97c62e` was deployed, migrations and fixed Beat schedules were applied, both public domains and the main/Ask/Research/readiness/health routes returned HTTP 200, public metrics returned 403 while the Nginx-local probe returned 200, the runtime smoke gate passed, and the 200-case offline comparison persisted successfully.
+- **Still pending production evidence:** observe the next scheduled 03:00 memory-cleanup execution and finish the audited crawl-failure reconciliation described below. These are not implied by successful schedule registration or route probes.
 - **Externally blocked:** semantic embeddings require separately supplied provider credentials; paid evaluation requires explicit authorization and credentials; human review is required before making any answer-quality claim. None of these capabilities is enabled by the defaults below.
 
 ## Preflight
@@ -79,22 +80,42 @@ Repeat `--failure-id` for each separately reviewed row. The command requires eve
 
 If an attachment URL exceeds the configured model field length, crawling skips that attachment and records the generic job warning `An attachment URL exceeded the supported length and was skipped.` The URL is not truncated into a different resource, and an otherwise valid page can still complete.
 
+Before retrying a source blocked by an old queued/running row, inspect and recover only jobs older than the reviewed threshold. Both commands are dry-run first:
+
+```bash
+docker compose exec -T web python manage.py recover_stale_crawl_jobs --older-than-minutes 60
+docker compose exec -T web python manage.py recover_stale_crawl_jobs --older-than-minutes 60 --apply
+```
+
+Re-fetch an exact unresolved failure by ID instead of changing its database fields manually:
+
+```bash
+docker compose exec -T web python manage.py recheck_crawl_failures 123
+docker compose exec -T web python manage.py recheck_crawl_failures 123 --apply
+```
+
+A successful recheck resolves that URL; a failed recheck records the newly observed error and HTTP status. Review the result before using the separate acknowledgement command.
+
 For the production HTTPS deployment, place the Let's Encrypt material at
 `/etc/letsencrypt/live/schoolsearchzzychen.online/` and allow inbound TCP 80
 and 443 in the cloud security group. Port 80 intentionally redirects to HTTPS.
 
 ## Deploy
 
-**Pending privileged target-environment deployment sequence (not run by this repository task):**
+The production sequence was executed on 2026-07-14. Use the same order for future deployments:
 
 ```bash
 docker compose build web worker agent_worker scheduler
 docker compose up -d mysql redis meilisearch
 docker compose up -d web worker agent_worker scheduler nginx
+docker compose exec -T nginx nginx -t
+docker compose exec -T nginx nginx -s reload
 docker compose exec web python manage.py migrate --noinput
 docker compose exec -T web python manage.py ensure_crawl_schedules
 docker compose exec web python manage.py research_agent_eval --dataset campus-research-v2 --strategy single_agent --record --json
 ```
+
+Reload Nginx after any standalone `web` recreation. Nginx can otherwise retain the replaced container's old Docker IP and return 502 even though the new Web container is healthy.
 
 `ensure_crawl_schedules` creates or updates the fixed Celery Beat rows, including
 `cleanup-expired-agent-memory-daily`. Run it after migrations on a fresh deployment
