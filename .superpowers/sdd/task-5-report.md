@@ -100,7 +100,7 @@ Source verification: `aggregator/management/commands/ensure_crawl_schedules.py` 
 
 ## Follow-up: direct-plan completion state (2026-07-13)
 
-`docs/superpowers/plans/2026-07-13-direct-completion.md` now marks the completed, locally reviewed code items in Tasks 1–4 as complete. The Task 4 external re-crawl/acknowledgement remains pending. Task 5 keeps the privileged restore/ACME verification and target-environment Compose, CI, deployment, migration, schedule, and production-probe work unchecked. This documentation-only update does not claim that any server, deployment, certificate, backup, or production probe occurred.
+At that time, `docs/superpowers/plans/2026-07-13-direct-completion.md` marked the completed, locally reviewed code items in Tasks 1–4 as complete while keeping restore/ACME and target-environment work pending. This historical status was superseded on 2026-07-14 only for the successful restore proof and staging ACME dry-run. Task 4 external re-crawl/acknowledgement plus Compose, CI, deployment, migrations, schedule execution, and production probes remain pending.
 
 ## Follow-up: stale admission-key configuration (2026-07-13)
 
