@@ -5,7 +5,7 @@
 - Worktree: `/home/ubuntu/hys/.worktrees/research-agent`
 - Scope completed: repository-editable documentation and configuration examples only.
 - At the time of the documentation implementation, Docker/Compose, sudo, production access, deployment, push, external CI, backup restore, ACME commands, paid evaluation, remote embedding calls, and human content review had not been performed. The later privileged verification addendum below records the restore and ACME checks completed on 2026-07-14.
-- No credentials, certificate material, dumps, tokens, or other secrets were read, written, or included in this report.
+- No credentials, certificate material, dump contents, tokens, or other secrets were printed, inspected, copied into the repository, or included in this report. The later restore verification necessarily streamed the compressed archive into its isolated temporary container.
 
 ## Files changed
 
@@ -15,11 +15,11 @@
   - Added session/memory retention and source-health defaults: `RAG_SESSION_RETENTION_DAYS=30`, `MEMORY_RETENTION_DAYS=180`, `SOURCE_FRESHNESS_HOURS=72`, and `SOURCE_OPEN_FAILURE_THRESHOLD=5`.
   - Kept all secret-valued fields blank or as existing non-secret placeholders.
 - `docs/deployment/research-agent-runbook.md`
-  - Added an explicit four-way status boundary: implemented/local verification; pending privileged server verification; pending deployment/production probes; externally blocked capabilities.
+  - Added explicit status boundaries for implemented/local verification, privileged server verification, pending deployment/production probes, and externally blocked capabilities.
   - Documented EvalOps command syntax, the 200-case `campus-research-v2` limitation, hard paid cap, 2.0 P95 promotion multiplier, and controlled-only experimental strategy.
   - Documented explicit memory retention, cleanup schedule, export/delete/account deletion, and request/run correlation behavior.
   - Documented dry-run-first crawl acknowledgement syntax and required flags, source-health compatibility/actionable counts, loopback metrics restrictions, and overlong attachment-URL behavior.
-  - Marked restore proof and ACME staging renewal as pending privileged verification rather than claiming either occurred.
+  - Initially marked restore proof and ACME staging renewal as pending; the 2026-07-14 operational addendum and runbook update now record their successful execution.
 - `docs/superpowers/plans/2026-07-12-production-agent-completion.md`
   - Added a dated status note and reconciled completed implementation checkboxes with outstanding deployment, credential, and human-review constraints.
 

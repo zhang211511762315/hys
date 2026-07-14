@@ -5,7 +5,7 @@
 This runbook distinguishes repository implementation from server operations.
 
 - **Implemented and locally verified:** the offline EvalOps baseline and comparison gate, opt-in memory lifecycle and account privacy controls, request/run correlation, crawl-failure acknowledgement rules, source-health fields, readiness, and loopback-only metrics. Local tests cover their contracts; this is not evidence of production availability or performance.
-- **Pending privileged server verification:** restore a checksum-valid backup in the temporary container and perform a staging ACME renewal dry-run. These require the server backup location, Docker access, and certificate/webroot state; neither has been run from this repository task.
+- **Privileged server verification completed 2026-07-14:** the latest checksum-valid backup was restored in the script's auto-cleaned temporary MySQL container, and the staging ACME webroot renewal dry-run completed without replacing the live certificate.
 - **Pending deployment and production probes:** Compose validation, CI, deployment of the reviewed commit, migrations, public-route/readiness/metrics checks, Beat cleanup observation, the EvalOps command, and source-health review must be run on the target environment and recorded there.
 - **Externally blocked:** semantic embeddings require separately supplied provider credentials; paid evaluation requires explicit authorization and credentials; human review is required before making any answer-quality claim. None of these capabilities is enabled by the defaults below.
 
@@ -127,16 +127,14 @@ sudo deploy/scripts/verify_mysql_restore.sh /var/backups/hys/hys-mysql-<timestam
 
 The restore script creates a temporary isolated MySQL container and volume,
 checks the checksum and required tables, then removes only its own resources.
-This command is a **pending privileged server verification**, not a verification
-performed by this repository task. Record the archive timestamp and checksum
-result in the server operations log after it succeeds; never include dump
-contents or credentials in that record.
+On 2026-07-14, `/var/backups/hys/hys-mysql-20260712T193401Z.sql.gz` passed its
+checksum check and temporary-container restore proof. Dump contents and
+credentials were not printed or copied into the repository.
 
-The corresponding ACME staging dry run is also pending privileged server
-verification. Use the server-approved staging command and webroot only after
-confirming it cannot modify the live certificate; record the resulting exit
-status and renewal output in server operations. Do not treat installation of
-the service or timer as proof that renewal works.
+The corresponding staging ACME command, `certbot renew --dry-run --webroot -w
+/var/www/certbot`, completed successfully on 2026-07-14 without replacing the
+live certificate. Do not treat this result as proof that a future production
+renewal has already occurred; retain the timer and public certificate probes.
 
 Install `deploy/systemd/hys-backup.service` and `deploy/systemd/hys-backup.timer`
 with the same `systemctl daemon-reload` and `enable --now` flow as certificate
