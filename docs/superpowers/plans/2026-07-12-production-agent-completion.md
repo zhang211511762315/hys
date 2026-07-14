@@ -8,6 +8,12 @@
 
 **Tech Stack:** Django 5.2, Celery, MySQL, Redis, Meilisearch, Prometheus client, Docker Compose, pytest.
 
+## Implementation status (2026-07-13)
+
+The direct-completion work implemented and locally verified the offline EvalOps baseline/comparison, memory lifecycle and correlation controls, and crawl acknowledgement/source-health behavior described below. The latest backup restore proof and staging ACME renewal dry-run completed on 2026-07-14. This status does **not** mean the production deployment is complete: CI/deployment, migrations, and target-environment probes remain pending. Embeddings, paid evaluation, and human answer-quality review remain externally blocked by missing credentials, authorization, or reviewers.
+
+`campus-research-v2` is an engineering-reviewed, deterministic 200-case planner baseline, not a human answer-quality benchmark. Paid evaluation remains disabled by default and is capped at 5 CNY; the experimental multi-Agent strategy remains controlled evaluation-only.
+
 ## Global constraints
 
 - Keep anonymous Research Agent requests compatible and stateless beyond a 30-day short session.
@@ -26,9 +32,9 @@
 
 ### Task 2: Authentication, privacy, and memory lifecycle
 
-- [ ] Add username/password registration, login, logout, password change, and account deletion.
-- [ ] Add opt-in long-term memory for authenticated users, with 180-day retention, export, and deletion.
-- [ ] Add a daily cleanup task for expired anonymous sessions and memory entries.
+- [x] Add username/password registration, login, logout, password change, and account deletion. (Implemented; production flow remains to be probed.)
+- [x] Add opt-in long-term memory for authenticated users, with 180-day retention, export, and deletion. (Implemented and locally verified; not automatically inserted into prompts.)
+- [x] Add a daily cleanup task for expired anonymous sessions and memory entries. (Beat registration is implemented and locally tested; scheduled execution remains a deployment probe.)
 
 ### Task 3: Tool runtime policy and traces
 
@@ -37,24 +43,25 @@
 
 ### Task 4: Hybrid RAG and controlled model evaluation
 
-- [ ] Add remote embedding provider settings and incremental Meilisearch user-provided vector indexing.
-- [ ] Add hybrid retrieval with deterministic re-ranking and lexical fallback.
-- [ ] Add a 200-case v2 evaluation suite, structured result persistence, and a 5 CNY paid-evaluation guard.
+- [x] Add remote embedding provider settings and incremental Meilisearch user-provided vector indexing. (Implementation is locally verified; provider credentials and remote indexing verification are externally blocked.)
+- [x] Add hybrid retrieval with deterministic re-ranking and lexical fallback. (Lexical fallback remains the production-safe default while semantic retrieval is disabled.)
+- [x] Add a 200-case v2 evaluation suite, structured result persistence, and a 5 CNY paid-evaluation guard. (Offline/local verification only; no paid or human answer-quality evaluation has run.)
 
 ### Task 5: Lightweight observability and source-health gates
 
-- [ ] Add readiness and localhost-only Prometheus metrics endpoints.
-- [ ] Add JSON request/run correlation and scheduled external GitHub route/certificate probes.
-- [ ] Add source freshness thresholds and actionable health reporting.
+- [x] Add readiness and localhost-only Prometheus metrics endpoints. (Implemented and locally verified; target-host restriction probe remains pending.)
+- [x] Add JSON request/run correlation. (Implemented and locally verified; production log/trace inspection remains pending.)
+- [ ] Add scheduled external GitHub route/certificate probes.
+- [x] Add source freshness thresholds and actionable health reporting. (Implemented and locally verified; real-source review remains pending.)
 
 ### Task 6: Production secret, certificate, and backup operations
 
-- [ ] Add webroot-based ACME renewal and a systemd timer runbook.
-- [ ] Add root-only compressed backup, checksum, retention, and temporary-container restore verification scripts.
+- [x] Add webroot-based ACME renewal and a systemd timer runbook. (Staging renewal dry-run completed successfully on 2026-07-14 without replacing the live certificate.)
+- [x] Add root-only compressed backup, checksum, retention, and temporary-container restore verification scripts. (The latest checksum-valid backup was restored successfully in an auto-cleaned temporary container on 2026-07-14.)
 - [ ] Document and execute staged credential rotation only after safe server-local secret values are supplied.
 
 ### Task 7: EvalOps and experimental multi-Agent comparison
 
-- [ ] Add versioned evaluation runs/case results and dashboard reports.
-- [ ] Add a bounded Planner/Researcher/Reviewer strategy available only to controlled evaluation.
-- [ ] Compare single and multi-Agent performance with promotion gates for quality, cost, and latency.
+- [x] Add versioned evaluation runs/case results and dashboard reports. (Offline planner metrics only.)
+- [x] Add a bounded Planner/Researcher/Reviewer strategy available only to controlled evaluation.
+- [x] Compare single and multi-Agent performance with promotion gates for quality, cost, and latency. (A gate result is not a production-promotion decision.)

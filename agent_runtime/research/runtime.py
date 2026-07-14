@@ -4,7 +4,7 @@ from time import monotonic
 from typing import Any
 import uuid
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Max
 from django.utils import timezone
 
@@ -15,6 +15,13 @@ from .generation import generate_research_answer
 from .schemas import ContentEvidence
 from .tools import build_default_registry
 from .workflow import build_research_graph
+
+
+def normalized_request_id(request_id: str | uuid.UUID | None = None) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(request_id)) if request_id else uuid.uuid4()
+    except (TypeError, ValueError, AttributeError):
+        return uuid.uuid4()
 
 
 def append_event(run: AgentRun, event_type: str, payload: dict[str, Any] | None = None) -> AgentEvent:
@@ -29,26 +36,67 @@ def append_event(run: AgentRun, event_type: str, payload: dict[str, Any] | None 
         )
 
 
-def create_research_run(goal: str, client_request_id: str) -> tuple[AgentRun, bool]:
+def create_research_run(
+    goal: str,
+    client_request_id: str,
+    request_id: str | uuid.UUID | None = None,
+) -> tuple[AgentRun, bool]:
     normalized_id = (client_request_id or "").strip()[:120]
     if not normalized_id:
         raise ValueError("client_request_id is required")
-    with transaction.atomic():
-        run, created = AgentRun.objects.get_or_create(
-            client_request_id=normalized_id,
-            defaults={
-                "kind": AgentRun.Kind.RAG,
-                "goal": (goal or "").strip()[:1000],
-                "trigger": "research_api",
-                "status": AgentRun.Status.QUEUED,
-            },
-        )
-        if created:
+    run_request_id = normalized_request_id(request_id)
+
+    existing = AgentRun.objects.filter(client_request_id=normalized_id).first()
+    if existing is not None:
+        return _reuse_research_run(existing, run_request_id), False
+
+    try:
+        with transaction.atomic():
+            run = AgentRun.objects.create(
+                client_request_id=normalized_id,
+                kind=AgentRun.Kind.RAG,
+                goal=(goal or "").strip()[:1000],
+                trigger="research_api",
+                status=AgentRun.Status.QUEUED,
+                request_id=run_request_id,
+            )
             append_event(run, "run.created", {"status": AgentRun.Status.QUEUED})
-    return run, created
+            return run, True
+    except IntegrityError:
+        pass
+
+    for _ in range(2):
+        with transaction.atomic():
+            try:
+                run = AgentRun.objects.select_for_update().get(client_request_id=normalized_id)
+            except AgentRun.DoesNotExist:
+                continue
+            return _reuse_research_run(run, run_request_id), False
+    raise RuntimeError("research run duplicate recovery failed")
 
 
-def replay_research_run(source: AgentRun) -> AgentRun:
+def _reuse_research_run(run: AgentRun, run_request_id: uuid.UUID) -> AgentRun:
+    with transaction.atomic():
+        if run.request_id is None:
+            updated = AgentRun.objects.filter(id=run.id, request_id__isnull=True).update(
+                request_id=run_request_id,
+                updated_at=timezone.now(),
+            )
+            if updated:
+                run.request_id = run_request_id
+            else:
+                run = AgentRun.objects.select_for_update().get(id=run.id)
+                if run.request_id is None:
+                    run.request_id = run_request_id
+                    run.save(update_fields=["request_id", "updated_at"])
+    return run
+
+
+def replay_research_run(
+    source: AgentRun,
+    request_id: str | uuid.UUID | None = None,
+) -> AgentRun:
+    run_request_id = normalized_request_id(request_id)
     with transaction.atomic():
         replay = AgentRun.objects.create(
             kind=source.kind,
@@ -56,6 +104,7 @@ def replay_research_run(source: AgentRun) -> AgentRun:
             goal=source.goal,
             trigger="research_replay",
             status=AgentRun.Status.QUEUED,
+            request_id=run_request_id,
             graph_version=source.graph_version,
             prompt_version=source.prompt_version,
             replay_of=source,

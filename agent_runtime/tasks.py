@@ -2,7 +2,7 @@ from celery import shared_task
 
 from .models import AgentRun
 from .research.runtime import execute_research_run
-from .services import cleanup_expired_memory, upsert_rag_chunks_for_item
+from .services import cleanup_expired_memory, cleanup_stale_research_admission_keys, upsert_rag_chunks_for_item
 
 
 @shared_task(
@@ -33,4 +33,6 @@ def index_content_item_rag(item_id: int):
 
 @shared_task
 def cleanup_expired_memory_task():
-    return cleanup_expired_memory()
+    result = cleanup_expired_memory()
+    result["admission_key_deleted"] = cleanup_stale_research_admission_keys()
+    return result

@@ -39,12 +39,29 @@ def ensure_fixed_crawl_schedules() -> None:
         month_of_year="*",
         timezone=settings.TIME_ZONE,
     )
+    memory_cleanup_crontab, _ = CrontabSchedule.objects.get_or_create(
+        minute="0",
+        hour="3",
+        day_of_week="*",
+        day_of_month="*",
+        month_of_year="*",
+        timezone=settings.TIME_ZONE,
+    )
     PeriodicTask.objects.update_or_create(
         name="crawl-web-sources-at-10-and-18",
         defaults={
             "task": "aggregator.tasks.enqueue_schedule_group",
             "crontab": web_crontab,
             "args": json.dumps([Source.ScheduleGroup.WEB_TWICE_DAILY]),
+            "enabled": True,
+        },
+    )
+    PeriodicTask.objects.update_or_create(
+        name="cleanup-expired-agent-memory-daily",
+        defaults={
+            "task": "agent_runtime.tasks.cleanup_expired_memory_task",
+            "crontab": memory_cleanup_crontab,
+            "args": json.dumps([]),
             "enabled": True,
         },
     )

@@ -24,6 +24,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "zhongbei_info.observability.CorrelationMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -168,8 +169,11 @@ RESEARCH_AGENT_CONCURRENT_LIMIT = int(os.getenv("RESEARCH_AGENT_CONCURRENT_LIMIT
 RESEARCH_AGENT_SESSION_MEMORY_ENABLED = os.getenv("RESEARCH_AGENT_SESSION_MEMORY_ENABLED", "0") == "1"
 RESEARCH_AGENT_LLM_PLANNER_ENABLED = os.getenv("RESEARCH_AGENT_LLM_PLANNER_ENABLED", "0") == "1"
 RESEARCH_AGENT_LLM_ANSWER_ENABLED = os.getenv("RESEARCH_AGENT_LLM_ANSWER_ENABLED", "0") == "1"
+EVAL_PAID_ENABLED = os.getenv("EVAL_PAID_ENABLED", "0") == "1"
+EVAL_PAID_HARD_CAP_CNY = int(os.getenv("EVAL_PAID_HARD_CAP_CNY", "5"))
 RAG_SESSION_RETENTION_DAYS = int(os.getenv("RAG_SESSION_RETENTION_DAYS", "30"))
 MEMORY_RETENTION_DAYS = int(os.getenv("MEMORY_RETENTION_DAYS", "180"))
+RESEARCH_ADMISSION_KEY_STALE_SECONDS = int(os.getenv("RESEARCH_ADMISSION_KEY_STALE_SECONDS", "300"))
 SOURCE_FRESHNESS_HOURS = int(os.getenv("SOURCE_FRESHNESS_HOURS", "72"))
 SOURCE_OPEN_FAILURE_THRESHOLD = int(os.getenv("SOURCE_OPEN_FAILURE_THRESHOLD", "5"))
 

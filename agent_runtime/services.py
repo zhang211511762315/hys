@@ -7,9 +7,11 @@ import json
 import re
 import secrets
 from typing import Iterable
+import uuid
 
 import httpx
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Q, Sum
 from django.urls import reverse
 from django.utils import timezone
@@ -30,6 +32,7 @@ from .models import (
     RagMessage,
     RagSession,
     MemoryEntry,
+    ResearchAdmissionKey,
 )
 from .graph import build_rag_graph
 from .schemas import RagAnswerSchema, SelfHealPlanSchema, UsageReportSchema
@@ -96,9 +99,11 @@ def get_or_create_session(session_key: str | None, title: str = "", user=None) -
     now = timezone.now()
     expires_at = now + timezone.timedelta(days=max(1, settings.RAG_SESSION_RETENTION_DAYS))
     session = RagSession.objects.filter(session_key=key).first()
-    if session is not None and session.user_id and session.user_id != getattr(user, "id", None):
-        session = None
-        key = new_session_key()
+    if session is not None:
+        user_id = getattr(user, "id", None)
+        if session.user_id != user_id:
+            session = None
+            key = new_session_key()
     if session is None:
         session = RagSession.objects.create(session_key=key, title=title[:160], user=user, expires_at=expires_at)
     else:
@@ -134,6 +139,26 @@ def cleanup_expired_memory(now=None) -> dict[str, int]:
     memory_deleted, _ = MemoryEntry.objects.filter(expires_at__lte=now).delete()
     session_deleted, _ = RagSession.objects.filter(expires_at__lte=now).delete()
     return {"memory_deleted": memory_deleted, "session_deleted": session_deleted}
+
+
+def cleanup_stale_research_admission_keys(now=None, minimum_age_seconds: int | None = None) -> int:
+    now = now or timezone.now()
+    minimum_age_seconds = minimum_age_seconds if minimum_age_seconds is not None else settings.RESEARCH_ADMISSION_KEY_STALE_SECONDS
+    stale_before = now - timezone.timedelta(seconds=max(1, minimum_age_seconds))
+    candidate_ids = list(
+        ResearchAdmissionKey.objects.filter(updated_at__lt=stale_before).values_list("id", flat=True)
+    )
+    deleted = 0
+    for key_id in candidate_ids:
+        with transaction.atomic():
+            key = ResearchAdmissionKey.objects.select_for_update().filter(id=key_id).first()
+            if key is None or key.updated_at >= stale_before:
+                continue
+            if AgentRun.objects.filter(client_request_id=key.client_request_id).exists():
+                continue
+            key.delete()
+            deleted += 1
+    return deleted
 
 
 def rebuild_rag_chunks(limit: int | None = None, sync_meili: bool = True) -> dict:
@@ -313,7 +338,13 @@ def retrieve_contexts(query: str, limit: int | None = None) -> list[RagContext]:
     return _retrieve_contexts_from_db(query, limit)
 
 
-def answer_question_events(question: str, session_key: str | None = None, user=None) -> Iterable[dict]:
+def answer_question_events(
+    question: str,
+    session_key: str | None = None,
+    user=None,
+    request_id: str | uuid.UUID | None = None,
+    on_run_created=None,
+) -> Iterable[dict]:
     question = (question or "").strip()[:1000]
     session = None
     run = None
@@ -324,7 +355,17 @@ def answer_question_events(question: str, session_key: str | None = None, user=N
     contexts: list[RagContext] = []
     try:
         session = get_or_create_session(session_key, question, user=user)
-        run = AgentRun.objects.create(kind=AgentRun.Kind.RAG, trigger="ask_page")
+        try:
+            run_request_id = uuid.UUID(str(request_id)) if request_id else uuid.uuid4()
+        except (TypeError, ValueError, AttributeError):
+            run_request_id = uuid.uuid4()
+        run = AgentRun.objects.create(
+            kind=AgentRun.Kind.RAG,
+            trigger="ask_page",
+            request_id=run_request_id,
+        )
+        if on_run_created is not None:
+            on_run_created(run)
         retrieval_step = AgentStep.objects.create(
             run=run,
             name="retrieve_context",

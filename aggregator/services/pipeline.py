@@ -168,7 +168,7 @@ def ingest_extracted_document(
         _ensure_title_fingerprint(existing_item)
         _record_job_stat(crawl_job, "duplicate_skip_count")
         _record_job_stat(crawl_job, "ai_skip_count")
-        _link_document_to_item(source, existing_item, raw_document, document)
+        _link_document_to_item(source, existing_item, raw_document, document, crawl_job)
         if existing_item.is_public:
             sync_item_to_search(existing_item)
         _queue_rag_index(existing_item.id)
@@ -179,7 +179,7 @@ def ingest_extracted_document(
         _record_job_stat(crawl_job, "duplicate_skip_count")
         _record_job_stat(crawl_job, "near_duplicate_skip_count")
         _record_job_stat(crawl_job, "ai_skip_count")
-        _link_document_to_item(source, near_duplicate, raw_document, document)
+        _link_document_to_item(source, near_duplicate, raw_document, document, crawl_job)
         _link_duplicate_group(near_duplicate)
         if near_duplicate.is_public:
             sync_item_to_search(near_duplicate)
@@ -221,7 +221,7 @@ def ingest_extracted_document(
             decision,
         )
         _record_job_stat(crawl_job, "new_count" if created else "updated_count")
-        _link_document_to_item(source, item, raw_document, document)
+        _link_document_to_item(source, item, raw_document, document, crawl_job)
         for tag_name in analysis.tags:
             tag = _get_or_create_tag(tag_name)
             item.tags.add(tag)
@@ -371,7 +371,13 @@ def _link_duplicate_group(item: ContentItem) -> None:
     item.save(update_fields=["duplicate_group", "updated_at"])
 
 
-def _link_document_to_item(source: Source, item: ContentItem, raw_document: RawDocument, document: ExtractedDocument) -> None:
+def _link_document_to_item(
+    source: Source,
+    item: ContentItem,
+    raw_document: RawDocument,
+    document: ExtractedDocument,
+    crawl_job: CrawlJob | None = None,
+) -> None:
     ContentSource.objects.update_or_create(
         content_item=item,
         source=source,
@@ -382,7 +388,11 @@ def _link_document_to_item(source: Source, item: ContentItem, raw_document: RawD
             "source_published_at": document.published_at,
         },
     )
+    max_source_url_length = Attachment._meta.get_field("source_url").max_length
     for image_url in document.image_urls[:10]:
+        if len(image_url) > max_source_url_length:
+            _append_job_warning(crawl_job, "An attachment URL exceeded the supported length and was skipped.")
+            continue
         Attachment.objects.get_or_create(content_item=item, source_url=image_url)
 
 
@@ -447,7 +457,7 @@ def _mark_crawl_failure_resolved(source: Source, url: str) -> None:
 
 def _record_crawl_failure(crawl_job: CrawlJob | None, source: Source, url: str, exc: Exception) -> None:
     if crawl_job is not None:
-        failure_class, permanent = _classify_failure(exc)
+        failure_class, permanent, http_status = _classify_failure(exc)
         last_failure = (
             CrawlFailure.objects.filter(source=source, url=url, resolved_at__isnull=True)
             .order_by("-created_at")
@@ -469,6 +479,10 @@ def _record_crawl_failure(crawl_job: CrawlJob | None, source: Source, url: str, 
             "retry_count": retry_count,
             "next_retry_at": next_retry_at,
             "permanent": permanent,
+            "http_status": http_status,
+            "acknowledged_at": None,
+            "acknowledged_status": None,
+            "acknowledged_note": "",
         }
         if last_failure is not None:
             CrawlFailure.objects.filter(source=source, url=url, resolved_at__isnull=True).exclude(
@@ -486,14 +500,14 @@ def _record_crawl_failure(crawl_job: CrawlJob | None, source: Source, url: str, 
         _record_job_stat(crawl_job, "failed_url_count")
 
 
-def _classify_failure(exc: Exception) -> tuple[str, bool]:
+def _classify_failure(exc: Exception) -> tuple[str, bool, int | None]:
     message = str(exc).lower()
     if isinstance(exc, ExtractionError) and ("missing or expired" in message or "不存在" in message or "过期" in message):
-        return CrawlFailure.FailureClass.PERMANENT, True
+        return CrawlFailure.FailureClass.PERMANENT, True, None
     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {404, 410}:
-        return CrawlFailure.FailureClass.PERMANENT, True
+        return CrawlFailure.FailureClass.PERMANENT, True, exc.response.status_code
     if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.TimeoutException)):
-        return CrawlFailure.FailureClass.NETWORK, False
+        return CrawlFailure.FailureClass.NETWORK, False, None
     if "network is unreachable" in message or "timed out" in message:
-        return CrawlFailure.FailureClass.NETWORK, False
-    return CrawlFailure.FailureClass.TRANSIENT, False
+        return CrawlFailure.FailureClass.NETWORK, False, None
+    return CrawlFailure.FailureClass.TRANSIENT, False, None

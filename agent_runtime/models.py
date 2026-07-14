@@ -36,6 +36,7 @@ class AgentRun(TimeStampedModel):
     kind = models.CharField(max_length=40, choices=Kind.choices)
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     client_request_id = models.CharField(max_length=120, unique=True, null=True, blank=True)
+    request_id = models.UUIDField(null=True, blank=True, db_index=True, editable=False)
     goal = models.TextField(blank=True)
     trigger = models.CharField(max_length=120, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING)
@@ -69,6 +70,80 @@ class AgentRun(TimeStampedModel):
         if metrics:
             self.metrics_json = {**(self.metrics_json or {}), **metrics}
         self.save(update_fields=["status", "finished_at", "error_message", "metrics_json", "updated_at"])
+
+
+class ResearchAdmissionKey(TimeStampedModel):
+    client_request_id = models.CharField(max_length=120, unique=True)
+
+    class Meta:
+        verbose_name = "研究请求准入键"
+        verbose_name_plural = "研究请求准入键"
+
+
+class EvaluationRun(TimeStampedModel):
+    class Mode(models.TextChoices):
+        OFFLINE = "offline", "零成本离线"
+        PAID = "paid", "付费"
+
+    class Status(models.TextChoices):
+        RUNNING = "running", "运行中"
+        SUCCEEDED = "succeeded", "成功"
+        FAILED = "failed", "失败"
+
+    agent_run = models.OneToOneField(
+        AgentRun,
+        on_delete=models.CASCADE,
+        related_name="evaluation_run",
+    )
+    dataset_version = models.CharField(max_length=80)
+    strategy = models.CharField(max_length=80, default="single_agent")
+    comparison_id = models.UUIDField(null=True, blank=True, editable=False, db_index=True)
+    mode = models.CharField(max_length=20, choices=Mode.choices, default=Mode.OFFLINE)
+    budget_cap_cny = models.DecimalField(max_digits=10, decimal_places=6, default=Decimal("0"))
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING)
+    metrics_json = models.JSONField(default=dict, blank=True)
+    started_at = models.DateTimeField(default=timezone.now)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "评测运行"
+        verbose_name_plural = "评测运行"
+
+
+class EvaluationCaseResult(TimeStampedModel):
+    class Status(models.TextChoices):
+        SUCCEEDED = "succeeded", "成功"
+        FAILED = "failed", "失败"
+
+    evaluation_run = models.ForeignKey(
+        EvaluationRun,
+        on_delete=models.CASCADE,
+        related_name="case_results",
+    )
+    case_id = models.CharField(max_length=80, editable=False)
+    category = models.CharField(max_length=80, editable=False)
+    goal = models.TextField(editable=False)
+    expected_task_type = models.CharField(max_length=80, editable=False)
+    expected_tools = models.JSONField(default=list, editable=False)
+    actual_task_type = models.CharField(max_length=80, blank=True, editable=False)
+    actual_tools = models.JSONField(default=list, editable=False)
+    status = models.CharField(max_length=20, choices=Status.choices)
+    latency_ms = models.PositiveIntegerField(default=0)
+    cost_cny = models.DecimalField(max_digits=10, decimal_places=6, default=Decimal("0"))
+    detail_json = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["case_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["evaluation_run", "case_id"],
+                name="unique_evaluation_case_result",
+            )
+        ]
+        verbose_name = "评测用例结果"
+        verbose_name_plural = "评测用例结果"
 
 
 class AgentStep(TimeStampedModel):

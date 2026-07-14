@@ -409,6 +409,37 @@ def test_healthz_marks_stale_or_excessive_source_failures_as_unhealthy(settings,
 
 
 @pytest.mark.django_db
+def test_healthz_gates_only_actionable_failures_and_keeps_open_failure_count_compatible(settings, client):
+    settings.SOURCE_FRESHNESS_HOURS = 24
+    settings.SOURCE_OPEN_FAILURE_THRESHOLD = 0
+    source = Source.objects.create(
+        name="已确认永久失败来源",
+        url="https://acknowledged-health.example.edu/",
+        source_type=Source.SourceType.OFFICIAL_SITE,
+        last_success_at=timezone.now(),
+    )
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    CrawlFailure.objects.create(
+        crawl_job=job,
+        source=source,
+        url=source.url,
+        failure_class=CrawlFailure.FailureClass.PERMANENT,
+        permanent=True,
+        http_status=404,
+        acknowledged_at=timezone.now(),
+        acknowledged_status=404,
+        acknowledged_note="Confirmed by operator",
+    )
+
+    payload = client.get("/healthz").json()
+
+    assert payload["source_health_ok"] is True
+    assert payload["open_failures"] == 1
+    assert payload["actionable_failures"] == 0
+    assert payload["acknowledged_permanent_failures"] == 1
+
+
+@pytest.mark.django_db
 def test_invalid_date_filter_is_user_safe(client):
     response = client.get(reverse("aggregator:search"), {"date_from": "not-a-date"})
 

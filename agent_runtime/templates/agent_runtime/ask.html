@@ -6,6 +6,14 @@
   <input id="question" name="q" type="search" placeholder="问一个关于已发布校园信息的问题" autocomplete="off" aria-label="问题">
   <button type="submit">提问</button>
 </form>
+{% if user.is_authenticated %}
+<form method="post" action="{% url 'agent_runtime:account_memory_save' %}" class="ask-form">
+  {% csrf_token %}
+  <input type="hidden" name="session" value="{{ session_key }}">
+  <label>主动保存长期记忆 <input name="content" maxlength="1000" required></label>
+  <button type="submit">保存记忆</button>
+</form>
+{% endif %}
 <div class="example-questions" aria-label="示例问题">
   <button type="button" data-question="最近有哪些就业招聘信息？">就业招聘</button>
   <button type="button" data-question="研究生招生相关通知有哪些？">研究生招生</button>
