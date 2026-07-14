@@ -326,6 +326,38 @@ def test_employment_api_html_response_uses_explicit_error(monkeypatch, settings)
     assert "HTML instead of JSON" in str(failures[0].exc)
 
 
+@pytest.mark.django_db
+def test_employment_ingest_resolves_failures_for_successful_api_fetches(monkeypatch):
+    source = Source.objects.create(name="就业信息网", url="http://zbjy.nuc.edu.cn/")
+    job = CrawlJob.objects.create(source=source, target_url=source.url)
+    endpoint = "http://zbjy.nuc.edu.cn/module/getnotices?start_page=1&start=1&count=15&k=&type_id=10831"
+    failure = CrawlFailure.objects.create(
+        crawl_job=job,
+        source=source,
+        url=endpoint,
+        error_type="ReadTimeout",
+        error_message="timed out",
+        failure_class=CrawlFailure.FailureClass.NETWORK,
+    )
+    fetch = FetchResult(
+        url=endpoint,
+        final_url=endpoint,
+        text='{"data": []}',
+        status_code=200,
+        headers={},
+        via="direct",
+    )
+    monkeypatch.setattr(
+        "aggregator.services.pipeline.fetch_employment_documents",
+        lambda source_url, max_articles: ([], [fetch], []),
+    )
+
+    assert ingest_source(source, job) == 0
+
+    failure.refresh_from_db()
+    assert failure.resolved_at is not None
+
+
 def test_ingest_source_uses_discovered_article_links(monkeypatch):
     class Source:
         url = "https://www.nuc.edu.cn/"

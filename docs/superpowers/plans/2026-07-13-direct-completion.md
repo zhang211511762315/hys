@@ -65,4 +65,4 @@
 - [x] Document all new environment defaults, operational commands, dataset limitations, and the distinction between implementation, deployment, and verification.
 - [x] Privileged server verification completed 2026-07-14: restored the latest checksum-valid backup in an auto-cleaned temporary MySQL container and completed a staging ACME renewal dry-run without modifying the live certificate.
 - [x] Run the local test suite, Django checks, migration-drift check, and offline EvalOps validation.
-- [ ] Pending target-environment deployment verification: validate Compose configuration and CI, deploy only the reviewed commit, apply migrations and `ensure_crawl_schedules`, then verify public routes, readiness, metrics restriction, scheduled cleanup, EvalOps command, and source-health state.
+- [x] Target-environment deployment verification completed 2026-07-14 for Compose/CI, reviewed commit deployment, migrations, schedule registration, public routes, readiness, metrics restriction, runtime smoke, and offline EvalOps persistence. The next scheduled cleanup observation and final source-health reconciliation remain explicitly pending operational evidence.

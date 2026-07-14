@@ -74,6 +74,9 @@ def _ingest_employment_source(source: Source, crawl_job: CrawlJob | None = None)
     for result in fetches:
         _record_fetch_via(crawl_job, result)
         _record_job_stat(crawl_job, "listing_pages_count")
+        _mark_crawl_failure_resolved(source, result.url)
+        if result.final_url != result.url:
+            _mark_crawl_failure_resolved(source, result.final_url)
     for failure in failures:
         _record_crawl_failure(crawl_job, source, failure.url, failure.exc)
     if failures:
