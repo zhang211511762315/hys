@@ -2,9 +2,14 @@ version: '3.9'
 
 services:
   app:
-    image: cooderl/wewe-rss-sqlite:latest
+    image: cooderl/wewe-rss-sqlite@sha256:349a1ec9478d767de72e69bf5a7cf12e6bb0df879bbd8b4522cd82819d003766
     container_name: wewe-rss
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - 127.0.0.1:4000:4000
     environment:

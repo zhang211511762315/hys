@@ -15,7 +15,7 @@ PER_PAGE = 50
 DATE_ORDERING = ("-source_published_at", "-published_at", "-created_at")
 
 
-@cache_page(settings.PAGE_CACHE_SECONDS)
+@cache_page(settings.PAGE_CACHE_SECONDS, cache="pages")
 def home(request):
     items, ctx = _apply_sort_and_date_range(request, _published_items())
     page = _page_obj(request, items)
@@ -25,35 +25,33 @@ def home(request):
     return render(request, "aggregator/home.html", ctx)
 
 
-@cache_page(settings.PAGE_CACHE_SECONDS)
+@cache_page(settings.PAGE_CACHE_SECONDS, cache="pages")
 def search(request):
     query = request.GET.get("q", "").strip()
     category_slug = request.GET.get("category", "").strip()
     items, ctx = _apply_sort_and_date_range(request, _published_items())
     sort = ctx["sort"]
-    if query:
-        meili_hits = meili_search(query, {"category": category_slug} if category_slug else None)
-        if meili_hits:
-            ids = [h["id"] for h in meili_hits]
-            items = items.filter(id__in=ids)
-            if sort != "date":
-                id_order = {id: i for i, id in enumerate(ids)}
-                items = sorted(items, key=lambda x: id_order.get(x.id, len(ids)))
-        else:
-            items = items.filter(
-                Q(title__icontains=query) | Q(summary__icontains=query) | Q(content_text__icontains=query)
-            )
-            if category_slug:
-                items = items.filter(category__slug=category_slug)
-    elif category_slug:
+    if category_slug:
         items = items.filter(category__slug=category_slug)
+    if query:
+        lower = _parse_date_start(ctx["date_from"]) or _public_since_datetime()
+        upper = _parse_date_end(ctx["date_to"]) or timezone.now()
+        filters = {"category_slug": category_slug, "published_from": lower.timestamp(), "published_to": upper.timestamp()}
+        meili_hits = meili_search(query, filters)
+        ids = list(dict.fromkeys(h["id"] for h in meili_hits))
+        # Database matching remains complete even while an older index is being rebuilt.
+        lexical = Q(title__icontains=query) | Q(summary__icontains=query) | Q(content_text__icontains=query)
+        items = items.filter(lexical | Q(id__in=ids))
+        if ids and sort != "date":
+            rank = Case(*(When(id=pk, then=Value(i)) for i, pk in enumerate(ids)), default=Value(len(ids)), output_field=IntegerField())
+            items = items.order_by(rank, "-importance_score", *DATE_ORDERING)
     page = _page_obj(request, items)
     ctx["page"] = page
     ctx.update(query=query, category_slug=category_slug, categories=Category.objects.all())
     return render(request, "aggregator/search.html", ctx)
 
 
-@cache_page(settings.PAGE_CACHE_DETAIL_SECONDS)
+@cache_page(settings.PAGE_CACHE_DETAIL_SECONDS, cache="pages")
 def category_detail(request, slug):
     category = get_object_or_404(Category, slug=slug)
     items, ctx = _apply_sort_and_date_range(request, _published_items().filter(category=category))
@@ -63,7 +61,7 @@ def category_detail(request, slug):
     return render(request, "aggregator/category.html", ctx)
 
 
-@cache_page(settings.PAGE_CACHE_DETAIL_SECONDS)
+@cache_page(settings.PAGE_CACHE_DETAIL_SECONDS, cache="pages")
 def source_detail(request, pk):
     source = get_object_or_404(Source, pk=pk)
     items, ctx = _apply_sort_and_date_range(
@@ -75,7 +73,7 @@ def source_detail(request, pk):
     return render(request, "aggregator/source.html", ctx)
 
 
-@cache_page(settings.PAGE_CACHE_DETAIL_SECONDS)
+@cache_page(settings.PAGE_CACHE_DETAIL_SECONDS, cache="pages")
 def source_group_view(request, group):
     valid = {v for v, _ in Source.SourceGroup.choices}
     if group not in valid:
@@ -92,7 +90,7 @@ def source_group_view(request, group):
     return render(request, "aggregator/source_group.html", ctx)
 
 
-@cache_page(settings.PAGE_CACHE_DETAIL_SECONDS)
+@cache_page(settings.PAGE_CACHE_DETAIL_SECONDS, cache="pages")
 def item_detail(request, pk):
     item = get_object_or_404(_published_items(), pk=pk)
     return render(request, "aggregator/item_detail.html", {"item": item})

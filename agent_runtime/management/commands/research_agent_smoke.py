@@ -26,7 +26,7 @@ class Command(BaseCommand):
         checks = {
             "replay_field": replay_field,
             "migration_0005": migration_0005,
-            "agent_queue": agent_queue == "agent",
+            "agent_queue": agent_queue == "agent_v2",
             "daily_limit": int(getattr(settings, "RESEARCH_AGENT_DAILY_LIMIT", 0)) > 0,
             "concurrent_limit": int(getattr(settings, "RESEARCH_AGENT_CONCURRENT_LIMIT", 0)) > 0,
         }

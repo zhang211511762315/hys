@@ -1,0 +1,4 @@
+-r requirements.txt
+-c constraints-runtime.txt
+pytest==8.3.5
+pytest-django==4.11.1

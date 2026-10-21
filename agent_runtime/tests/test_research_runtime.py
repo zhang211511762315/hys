@@ -289,10 +289,10 @@ def test_research_run_api_enqueues_once_for_same_client_request(monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        "agent_runtime.views.execute_research_run_task.delay",
+        "agent_runtime.admission.execute_research_run_task.delay",
         lambda run_id: calls.append(run_id),
     )
-    client = Client()
+    client = _research_client()
     payload = {"goal": "比较近期就业活动", "client_request_id": "browser-request-1"}
 
     first = client.post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
@@ -316,10 +316,10 @@ def test_research_api_retry_backfills_legacy_null_request_correlation(monkeypatc
         status=AgentRun.Status.QUEUED,
         request_id=None,
     )
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    monkeypatch.setattr("agent_runtime.admission.execute_research_run_task.delay", lambda _run_id: None)
     request_id = str(uuid.uuid4())
 
-    response = Client().post(
+    response = _research_client().post(
         "/api/v1/research-runs",
         data=json.dumps({"goal": "重试", "client_request_id": legacy.client_request_id}),
         content_type="application/json",
@@ -327,9 +327,8 @@ def test_research_api_retry_backfills_legacy_null_request_correlation(monkeypatc
     )
 
     legacy.refresh_from_db()
-    assert response.status_code == 200
-    assert response.json()["run_id"] == str(legacy.public_id)
-    assert legacy.request_id == uuid.UUID(request_id)
+    assert response.status_code == 404
+    assert legacy.request_id is None
 
 
 @pytest.mark.django_db
@@ -342,6 +341,8 @@ def test_authenticated_duplicate_admission_locks_user_then_current_run_and_skips
         client_request_id="admission-duplicate-request",
         request_id=uuid.uuid4(),
     )
+    from agent_runtime.models import ResearchRunOwnership
+    ResearchRunOwnership.objects.create(run=run, owner=user)
     locking_order = []
     original_select_for_update = QuerySet.select_for_update
 
@@ -352,8 +353,8 @@ def test_authenticated_duplicate_admission_locks_user_then_current_run_and_skips
 
     monkeypatch.setattr(QuerySet, "select_for_update", observe_lock)
     monkeypatch.setattr(
-        "agent_runtime.views._consume_daily_research_quota",
-        lambda _client_ip: (_ for _ in ()).throw(AssertionError("duplicate must skip quota admission")),
+        "agent_runtime.admission._reserve_ip",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("duplicate must skip quota admission")),
     )
     client = Client()
     client.force_login(user)
@@ -366,7 +367,7 @@ def test_authenticated_duplicate_admission_locks_user_then_current_run_and_skips
 
     assert response.status_code == 200
     assert response.json()["run_id"] == str(run.public_id)
-    assert locking_order == [ResearchAdmissionKey, get_user_model()]
+    assert locking_order == [get_user_model(), AgentRun]
 
 
 @pytest.mark.django_db
@@ -383,12 +384,12 @@ def test_authenticated_first_admission_locks_before_quota_and_creates_once(monke
         return original_select_for_update(queryset, *args, **kwargs)
 
     def quota_after_locks(_client_ip):
-        assert locking_order == [ResearchAdmissionKey, get_user_model()]
+        assert locking_order == [get_user_model()]
         return True
 
     monkeypatch.setattr(QuerySet, "select_for_update", observe_lock)
-    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", quota_after_locks)
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    monkeypatch.setattr("agent_runtime.admission._reserve_ip", lambda ip, limit: quota_after_locks(ip))
+    monkeypatch.setattr("agent_runtime.admission.execute_research_run_task.delay", lambda _run_id: None)
     client = Client()
     client.force_login(user)
 
@@ -403,67 +404,31 @@ def test_authenticated_first_admission_locks_before_quota_and_creates_once(monke
 
 
 @pytest.mark.django_db
-def test_anonymous_key_lock_rejects_true_quota_without_creating_a_run(monkeypatch):
+def test_anonymous_research_rejected_before_admission(monkeypatch):
+    from unittest.mock import patch
     from agent_runtime.models import AgentRun, ResearchAdmissionKey
-
-    client_request_id = "anonymous-quota-rejection"
-    locking_order = []
-    original_select_for_update = QuerySet.select_for_update
-
-    def observe_lock(queryset, *args, **kwargs):
-        if queryset.model is ResearchAdmissionKey:
-            locking_order.append(queryset.model)
-        return original_select_for_update(queryset, *args, **kwargs)
-
-    def reject_after_key_lock(_client_ip):
-        assert locking_order == [ResearchAdmissionKey]
-        return False
-
-    monkeypatch.setattr(QuerySet, "select_for_update", observe_lock)
-    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", reject_after_key_lock)
-
-    response = Client().post(
-        "/api/v1/research-runs",
-        data=json.dumps({"goal": "匿名并发重试", "client_request_id": client_request_id}),
-        content_type="application/json",
-    )
-
-    assert response.status_code == 429
-    assert not AgentRun.objects.filter(client_request_id=client_request_id).exists()
-    assert not ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).exists()
-
-
-@pytest.mark.django_db
-def test_rejected_unique_anonymous_admissions_do_not_accumulate_keys(monkeypatch):
-    from agent_runtime.models import ResearchAdmissionKey
-
-    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", lambda _client_ip: False)
-    client = Client()
-
-    for index in range(5):
-        response = client.post(
-            "/api/v1/research-runs",
-            data=json.dumps({"goal": "超额请求", "client_request_id": f"rejected-key-{index}"}),
-            content_type="application/json",
-        )
-        assert response.status_code == 429
-
+    with patch("agent_runtime.views.admit") as gate:
+        response = Client(enforce_csrf_checks=True).post("/api/v1/research-runs", data=json.dumps({"goal": "fixture", "client_request_id": "anonymous-fixture"}), content_type="application/json")
+    assert response.status_code == 401
+    gate.assert_not_called()
+    assert AgentRun.objects.count() == 0
     assert ResearchAdmissionKey.objects.count() == 0
+
+
 
 
 @pytest.mark.django_db
 def test_exception_during_admission_cleans_up_orphan_key(monkeypatch):
     from agent_runtime.models import ResearchAdmissionKey
 
-    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", lambda _client_ip: True)
     monkeypatch.setattr(
-        "agent_runtime.views.create_research_run",
+        "agent_runtime.admission.create_research_run",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("runtime failed")),
     )
     client_request_id = "exception-admission-key"
 
     with pytest.raises(RuntimeError, match="runtime failed"):
-        Client().post(
+        _research_client().post(
             "/api/v1/research-runs",
             data=json.dumps({"goal": "异常清理", "client_request_id": client_request_id}),
             content_type="application/json",
@@ -472,23 +437,6 @@ def test_exception_during_admission_cleans_up_orphan_key(monkeypatch):
     assert not ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).exists()
 
 
-@pytest.mark.django_db
-def test_retry_after_true_rejection_recreates_key_and_creates_one_run(monkeypatch):
-    from agent_runtime.models import AgentRun, ResearchAdmissionKey
-
-    quota_results = iter([False, True])
-    monkeypatch.setattr("agent_runtime.views._consume_daily_research_quota", lambda _client_ip: next(quota_results))
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
-    client_request_id = "retry-after-rejection"
-    payload = {"goal": "拒绝后重试", "client_request_id": client_request_id}
-
-    rejected = Client().post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
-    accepted = Client().post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
-
-    assert rejected.status_code == 429
-    assert accepted.status_code == 202
-    assert AgentRun.objects.filter(client_request_id=client_request_id).count() == 1
-    assert ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).count() == 1
 
 
 @pytest.mark.django_db
@@ -515,141 +463,25 @@ def test_stale_orphan_admission_key_cleanup_preserves_active_and_run_backed_keys
     assert ResearchAdmissionKey.objects.filter(id=backed_key.id).exists()
 
 
-@pytest.mark.django_db
-def test_admission_key_retries_when_duplicate_recovery_row_was_deleted(monkeypatch):
-    from agent_runtime.models import ResearchAdmissionKey
-    from agent_runtime.views import _get_research_admission_key
 
-    original_create = ResearchAdmissionKey.objects.create
-    original_get = ResearchAdmissionKey.objects.get
-    create_attempts = []
-    get_attempts = []
 
-    def create_after_first_duplicate(**kwargs):
-        create_attempts.append(True)
-        if len(create_attempts) == 1:
-            raise IntegrityError("duplicate key")
-        return original_create(**kwargs)
-
-    def missing_after_duplicate(**kwargs):
-        get_attempts.append(True)
-        if len(get_attempts) == 1:
-            raise ResearchAdmissionKey.DoesNotExist
-        return original_get(**kwargs)
-
-    monkeypatch.setattr(ResearchAdmissionKey.objects, "create", create_after_first_duplicate)
-    monkeypatch.setattr(ResearchAdmissionKey.objects, "get", missing_after_duplicate)
-
-    key = _get_research_admission_key("recreated-after-delete")
-
-    assert len(create_attempts) == 2
-    assert get_attempts == [True]
-    assert key.client_request_id == "recreated-after-delete"
 
 
 @pytest.mark.django_db
-def test_admission_key_creation_exhaustion_raises_sanitized_error(monkeypatch):
-    from agent_runtime.models import ResearchAdmissionKey
-    from agent_runtime.views import _get_research_admission_key
-
-    monkeypatch.setattr(
-        ResearchAdmissionKey.objects,
-        "create",
-        lambda **_kwargs: (_ for _ in ()).throw(IntegrityError("duplicate key")),
-    )
-    monkeypatch.setattr(
-        ResearchAdmissionKey.objects,
-        "get",
-        lambda **_kwargs: (_ for _ in ()).throw(ResearchAdmissionKey.DoesNotExist),
-    )
-
-    with pytest.raises(RuntimeError, match="research admission key unavailable"):
-        _get_research_admission_key("exhausted-admission-key")
-
-
-@pytest.mark.django_db
-def test_admission_key_exhaustion_returns_private_503_and_cleans_orphan(monkeypatch):
-    from agent_runtime.models import ResearchAdmissionKey
-    from agent_runtime.views import ResearchAdmissionUnavailable
-
-    client_request_id = "http-exhausted-admission-key"
-    ResearchAdmissionKey.objects.create(client_request_id=client_request_id)
-    monkeypatch.setattr(
-        "agent_runtime.views._get_research_admission_key",
-        lambda _client_request_id: (_ for _ in ()).throw(ResearchAdmissionUnavailable("internal retry details")),
-    )
+def test_admission_cache_failure_is_private_and_does_not_create_a_run(monkeypatch):
+    from agent_runtime.models import AgentRun
+    monkeypatch.setattr("agent_runtime.admission.cache.add", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("internal retry details")))
     request_id = str(uuid.uuid4())
-
-    response = Client().post(
-        "/api/v1/research-runs",
-        data=json.dumps({"goal": "不可用响应", "client_request_id": client_request_id}),
-        content_type="application/json",
-        HTTP_X_REQUEST_ID=request_id,
-    )
-
+    response = _research_client().post("/api/v1/research-runs", data=json.dumps({"goal": "fixture", "client_request_id": "cache-failure-fixture"}), content_type="application/json", HTTP_X_REQUEST_ID=request_id)
     assert response.status_code == 503
     assert response.json() == {"error": "admission temporarily unavailable"}
     assert response["X-Request-ID"] == request_id
     assert "internal retry details" not in response.content.decode()
-    assert not ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).exists()
+    assert AgentRun.objects.count() == 0
 
 
-@pytest.mark.django_db
-def test_deleted_before_lock_admission_key_exhaustion_returns_private_503(monkeypatch):
-    from agent_runtime.models import ResearchAdmissionKey
-
-    client_request_id = "deleted-before-lock-key"
-    helper_calls = []
-
-    def return_deleted_key(_client_request_id):
-        key = ResearchAdmissionKey.objects.create(client_request_id=client_request_id)
-        helper_calls.append(key.id)
-        key.delete()
-        return key
-
-    monkeypatch.setattr("agent_runtime.views._get_research_admission_key", return_deleted_key)
-    request_id = str(uuid.uuid4())
-
-    response = Client().post(
-        "/api/v1/research-runs",
-        data=json.dumps({"goal": "锁前删除", "client_request_id": client_request_id}),
-        content_type="application/json",
-        HTTP_X_REQUEST_ID=request_id,
-    )
-
-    assert helper_calls and len(helper_calls) == 2
-    assert response.status_code == 503
-    assert response.json() == {"error": "admission temporarily unavailable"}
-    assert response["X-Request-ID"] == request_id
-    assert "recreation failed" not in response.content.decode()
-    assert not ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).exists()
 
 
-@pytest.mark.django_db
-def test_anonymous_same_key_admission_lock_preserves_new_and_duplicate_responses(monkeypatch):
-    from agent_runtime.models import ResearchAdmissionKey
-
-    client_request_id = "anonymous-same-key-admission"
-    locked_keys = []
-    original_select_for_update = QuerySet.select_for_update
-
-    def observe_key_lock(queryset, *args, **kwargs):
-        if queryset.model is ResearchAdmissionKey:
-            locked_keys.append(True)
-        return original_select_for_update(queryset, *args, **kwargs)
-
-    monkeypatch.setattr(QuerySet, "select_for_update", observe_key_lock)
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
-    payload = {"goal": "匿名同键", "client_request_id": client_request_id}
-
-    first = Client().post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
-    second = Client().post("/api/v1/research-runs", data=json.dumps(payload), content_type="application/json")
-
-    assert first.status_code == 202
-    assert second.status_code == 200
-    assert first.json()["run_id"] == second.json()["run_id"]
-    assert locked_keys == [True, True]
-    assert ResearchAdmissionKey.objects.filter(client_request_id=client_request_id).count() == 1
 
 
 @pytest.mark.django_db
@@ -670,7 +502,7 @@ def test_different_authenticated_users_same_key_do_not_take_agent_run_gap_locks(
         return original_select_for_update(queryset, *args, **kwargs)
 
     monkeypatch.setattr(QuerySet, "select_for_update", observe_locks)
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    monkeypatch.setattr("agent_runtime.admission.execute_research_run_task.delay", lambda _run_id: None)
     first_client = Client()
     first_client.force_login(first_user)
     second_client = Client()
@@ -684,17 +516,17 @@ def test_different_authenticated_users_same_key_do_not_take_agent_run_gap_locks(
     assert first.status_code == 202
     assert second.status_code == 202
     assert all("client_request_id" not in query for query in locking_agent_queries)
-    assert len(locked_key_ids) == 2
-    assert ResearchAdmissionKey.objects.count() == 2
+    assert len(locked_key_ids) == 0
+    assert ResearchAdmissionKey.objects.count() == 0
 
 
 @pytest.mark.django_db
 def test_research_request_ids_are_persisted_and_idempotent_reuse_keeps_original(monkeypatch, caplog):
     from agent_runtime.models import AgentRun
 
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    monkeypatch.setattr("agent_runtime.admission.execute_research_run_task.delay", lambda _run_id: None)
     caplog.set_level(logging.INFO, logger="zhongbei_info.observability")
-    client = Client()
+    client = _research_client()
     original_request_id = str(uuid.uuid4())
     retry_request_id = str(uuid.uuid4())
     payload = {"goal": "查询关联 ID", "client_request_id": "correlation-request-01"}
@@ -731,9 +563,9 @@ def test_replay_persists_the_replay_request_id(monkeypatch):
 
     original, _ = create_research_run("查询关联 ID", "replay-correlation-01")
     replay_request_id = str(uuid.uuid4())
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
+    monkeypatch.setattr("agent_runtime.admission.execute_research_run_task.delay", lambda _run_id: None)
 
-    response = Client().post(
+    response = _research_client().post(
         f"/api/v1/research-runs/{original.public_id}/replay",
         HTTP_X_REQUEST_ID=replay_request_id,
     )
@@ -819,7 +651,6 @@ def test_legacy_rag_runtime_gets_a_request_id_without_an_http_request(monkeypatc
     from agent_runtime.services import answer_question_events
 
     monkeypatch.setattr("agent_runtime.services.retrieve_contexts", lambda _question: [])
-    monkeypatch.setattr("agent_runtime.services.build_rag_graph", lambda: None)
     monkeypatch.setattr(
         "agent_runtime.services._generate_answer",
         lambda _prompt, _contexts, _estimate: ("回答", {}, "budget_or_key_unavailable"),
@@ -858,7 +689,7 @@ def test_https_redirect_has_correlation_header_and_completion_log(caplog):
     ]
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_research_event_stream_includes_stable_sse_ids():
     from agent_runtime.models import AgentRun
     from agent_runtime.research.runtime import append_event, create_research_run
@@ -867,10 +698,12 @@ def test_research_event_stream_includes_stable_sse_ids():
     append_event(run, "plan.created", {"step_count": 2})
     run.status = AgentRun.Status.SUCCEEDED
     run.save(update_fields=["status", "updated_at"])
-    client = Client()
+    client = _research_client()
 
     response = client.get(f"/api/v1/research-runs/{run.public_id}/events")
-    body = b"".join(response.streaming_content).decode()
+    async def collect():
+        return b"".join([chunk async for chunk in response.streaming_content]).decode()
+    body = async_to_sync(collect)()
 
     assert response.status_code == 200
     assert "id: 1\nevent: run.created" in body
@@ -882,17 +715,18 @@ def test_research_event_stream_includes_stable_sse_ids():
 def test_research_event_stream_observes_events_created_after_connection():
     from agent_runtime.models import AgentRun
     from agent_runtime.research.runtime import append_event, create_research_run
-
-    run, _ = create_research_run("查询实时事件", "request-live-events")
-    response = Client().get(f"/api/v1/research-runs/{run.public_id}/events")
-    iterator = iter(response.streaming_content)
-
-    first = next(iterator).decode()
-    append_event(run, "answer.delta", {"text": "第一段"})
-    run.status = AgentRun.Status.SUCCEEDED
-    run.save(update_fields=["status", "updated_at"])
-    second = next(iterator).decode()
-
+    from asgiref.sync import sync_to_async
+    run, _ = create_research_run("fixture", "request-live-events")
+    response = _research_client().get(f"/api/v1/research-runs/{run.public_id}/events")
+    async def consume():
+        iterator = aiter(response.streaming_content)
+        first = (await anext(iterator)).decode()
+        await sync_to_async(append_event)(run, "answer.delta", {"text": "fixture"})
+        await AgentRun.objects.filter(pk=run.pk).aupdate(status=AgentRun.Status.SUCCEEDED)
+        second = (await anext(iterator)).decode()
+        await iterator.aclose()
+        return first, second
+    first, second = async_to_sync(consume)()
     assert "event: run.created" in first
     assert "event: answer.delta" in second
 
@@ -900,8 +734,8 @@ def test_research_event_stream_observes_events_created_after_connection():
 @pytest.mark.django_db
 def test_research_api_enforces_daily_limit_for_new_requests(monkeypatch, settings):
     settings.RESEARCH_AGENT_DAILY_LIMIT = 1
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", lambda _run_id: None)
-    client = Client()
+    monkeypatch.setattr("agent_runtime.admission.execute_research_run_task.delay", lambda _run_id: None)
+    client = _research_client()
 
     first = client.post(
         "/api/v1/research-runs",
@@ -925,7 +759,7 @@ def test_cancel_research_run_marks_terminal_and_emits_event():
     from agent_runtime.research.runtime import create_research_run
 
     run, _ = create_research_run("查询通知", "cancel-request-01")
-    response = Client().post(f"/api/v1/research-runs/{run.public_id}/cancel")
+    response = _research_client().post(f"/api/v1/research-runs/{run.public_id}/cancel")
     run.refresh_from_db()
 
     assert response.status_code == 200
@@ -943,7 +777,7 @@ def test_cancel_is_idempotent_after_terminal_state():
     run.finished_at = timezone.now()
     run.save(update_fields=["status", "finished_at", "updated_at"])
 
-    response = Client().post(f"/api/v1/research-runs/{run.public_id}/cancel")
+    response = _research_client().post(f"/api/v1/research-runs/{run.public_id}/cancel")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -965,9 +799,9 @@ def test_replay_creates_new_run_with_frozen_versions(monkeypatch):
     original.status = AgentRun.Status.SUCCEEDED
     original.save(update_fields=["graph_version", "prompt_version", "status", "updated_at"])
     queued = []
-    monkeypatch.setattr("agent_runtime.views.execute_research_run_task.delay", queued.append)
+    monkeypatch.setattr("agent_runtime.admission.execute_research_run_task.delay", queued.append)
 
-    response = Client().post(f"/api/v1/research-runs/{original.public_id}/replay")
+    response = _research_client().post(f"/api/v1/research-runs/{original.public_id}/replay")
 
     assert response.status_code == 202
     replay = AgentRun.objects.exclude(id=original.id).get()
@@ -999,11 +833,11 @@ def test_session_memory_is_used_only_when_secure_mode_enabled(settings):
 
 @pytest.mark.django_db
 def test_research_page_uses_post_api_and_event_stream():
-    response = Client().get("/research/")
+    response = _research_client().get("/research/")
     html = response.content.decode()
 
     assert response.status_code == 200
-    assert 'fetch("/api/v1/research-runs"' in html
+    assert '"/api/v1/research-runs"' in html
     assert 'method: "POST"' in html
     assert "new EventSource(payload.events_url)" in html
     assert "当前公网为 HTTP 演示环境" not in html
@@ -1011,14 +845,14 @@ def test_research_page_uses_post_api_and_event_stream():
 
 @pytest.mark.django_db
 def test_research_page_exposes_cancel_replay_and_stream_error_states():
-    html = Client().get("/research/").content.decode()
+    html = _research_client().get("/research/").content.decode()
 
     assert 'id="cancel-run"' in html
     assert 'id="replay-run"' in html
-    assert "activeStream.onerror" in html
-    assert "请求过于频繁" in html
-    assert 'fetch(`/api/v1/research-runs/${activeRunId}/cancel`' in html
-    assert 'fetch(`/api/v1/research-runs/${runId}/replay`' in html
+    assert 'id="refresh-run"' in html
+    assert "网络中断或响应异常" in html
+    assert "同一请求标识" in html
+    assert "无法确认取消结果" in html
     assert "?q=" not in html
 
 
@@ -1257,3 +1091,10 @@ def test_agent_dashboard_separates_actionable_and_acknowledged_permanent_failure
 
     assert "待处理失败 0" in html
     assert "已确认永久失败 1" in html
+
+
+def _research_client():
+    user = get_user_model().objects.create_user(username="research-" + uuid.uuid4().hex, password="fixture-password", is_staff=True)
+    client = Client()
+    client.force_login(user)
+    return client

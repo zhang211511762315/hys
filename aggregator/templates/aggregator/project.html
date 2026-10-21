@@ -1,0 +1,5 @@
+{% extends "aggregator/base.html" %}
+{% block title %}{{ project.name }} · 各项目{% endblock %}
+{% block content %}<nav aria-label="面包屑"><a href="/">首页</a> / <a href="/projects/">各项目</a> / {{ project.name }}</nav>
+<section class="hero"><h1>{{ project.name }}</h1><p>{{ project.summary }}</p>{% if project.ready %}<a class="button" href="{{ project.href }}">打开应用</a>{% else %}<span class="usage-line">应用入口准备中，下面列出已有功能。</span>{% endif %}</section>
+<div class="workflow">{% for group in project.groups %}<section class="panel"><h2>{{ group.label }}</h2><ul class="feature-links">{% for feature in group.features %}<li>{% if feature.ready %}<a href="{{ feature.href }}">{{ feature.label }}</a>{% else %}<span>{{ feature.label }} · 准备中</span>{% endif %}</li>{% endfor %}</ul></section>{% endfor %}</div>{% endblock %}

@@ -1,3 +1,5 @@
+name: hys
+# Infrastructure only. Application processes use docker-compose.release.yml.
 x-logging: &default-logging
   driver: "json-file"
   options:
@@ -6,7 +8,7 @@ x-logging: &default-logging
 
 services:
   mysql:
-    image: mysql:8.4
+    image: mysql@sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -35,7 +37,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     restart: unless-stopped
     logging: *default-logging
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
@@ -48,7 +50,7 @@ services:
       retries: 10
 
   meilisearch:
-    image: getmeili/meilisearch:v1.14
+    image: getmeili/meilisearch@sha256:8cd411ba5d9ec2dfce02e241305208eebacce0fd74a72bece21cadd03dc566ce
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -57,78 +59,10 @@ services:
     volumes:
       - meili_data:/meili_data
 
-  web:
-    build: .
-    restart: unless-stopped
-    logging: *default-logging
-    env_file: ${APP_ENV_FILE:-.env}
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      meilisearch:
-        condition: service_started
-    command: >
-      sh -c "python manage.py migrate &&
-             python manage.py collectstatic --noinput &&
-             gunicorn zhongbei_info.asgi:application --bind 0.0.0.0:8000 --workers 1 -k uvicorn_worker.UvicornWorker --timeout 60 --max-requests 500 --max-requests-jitter 50"
-    volumes:
-      - static_data:/app/staticfiles
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-  worker:
-    build: .
-    restart: unless-stopped
-    logging: *default-logging
-    env_file: ${APP_ENV_FILE:-.env}
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      meilisearch:
-        condition: service_started
-    command: ["celery", "-A", "zhongbei_info", "worker", "--loglevel=INFO", "--concurrency=1", "--max-tasks-per-child=100", "--max-memory-per-child=200000"]
-
-  agent_worker:
-    build: .
-    restart: unless-stopped
-    logging: *default-logging
-    env_file: ${APP_ENV_FILE:-.env}
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      meilisearch:
-        condition: service_started
-    command: ["celery", "-A", "zhongbei_info", "worker", "--loglevel=INFO", "--concurrency=1", "--queues=agent", "--hostname=agent@%h", "--max-tasks-per-child=100", "--max-memory-per-child=200000"]
-
-  scheduler:
-    build: .
-    restart: unless-stopped
-    logging: *default-logging
-    env_file: ${APP_ENV_FILE:-.env}
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: ["celery", "-A", "zhongbei_info", "beat", "--loglevel=INFO", "--scheduler=django_celery_beat.schedulers:DatabaseScheduler"]
-
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     restart: unless-stopped
     logging: *default-logging
-    depends_on:
-      web:
-        condition: service_started
     ports:
       - "80:80"
       - "443:443"

@@ -192,7 +192,6 @@ def test_long_term_memory_is_not_injected_into_rag_prompts(monkeypatch):
     )
     prompts = []
     monkeypatch.setattr("agent_runtime.services.retrieve_contexts", lambda _question: [])
-    monkeypatch.setattr("agent_runtime.services.build_rag_graph", lambda: None)
     monkeypatch.setattr(
         "agent_runtime.services._generate_answer",
         lambda prompt, _contexts, _estimate: (prompts.append(prompt) or "回答", {}, "budget_or_key_unavailable"),

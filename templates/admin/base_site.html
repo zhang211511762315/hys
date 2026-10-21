@@ -1,0 +1,5 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ title }} · HYS 项目管理{% endblock %}
+{% block branding %}<div id="site-name"><a href="/projects/hys/">HYS · 返回项目功能</a></div>{% endblock %}
+{% block usertools %}{% if not request.public_workspace %}{{ block.super }}{% endif %}{% endblock %}
+{% block nav-global %}<a style="color:white;padding:8px" href="/projects/">各项目</a>{% endblock %}

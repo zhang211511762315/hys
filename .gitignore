@@ -13,3 +13,14 @@ wewe-rss/data/
 .playwright-mcp/
 .worktrees/
 docs/deploy-caddy-gunicorn-systemd-prompt.md
+
+# Private runtime environment for release containers
+/deploy/releases/
+
+# Local credentials and database sidecars
+.env.*
+!.env.example
+*.sqlite3-*
+*.pem
+*.key
+*.creds

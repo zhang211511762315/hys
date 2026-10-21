@@ -1,19 +1,19 @@
 {% extends "aggregator/base.html" %}
-{% block title %}账户与隐私 · 中北信息聚合{% endblock %}
+{% block title %}记忆与会话 · 中北信息聚合{% endblock %}
 {% block content %}
 <section class="panel">
-  <h1>账户与隐私</h1>
+  <h1>记忆与会话</h1>
   <p>长期记忆只在你主动保存时创建，默认 {{ memory_retention_days }} 天后删除。</p>
-  <p><a href="{% url 'agent_runtime:account_password_change' %}">修改密码</a></p>
+  {% if not request.public_workspace %}<p><a href="{% url 'agent_runtime:account_password_change' %}">修改密码</a></p>{% endif %}
   <h2>已保存记忆</h2>
   <form method="post" action="{% url 'agent_runtime:account_memory_save' %}">{% csrf_token %}
     <label>保存长期记忆 <input name="content" maxlength="1000" required></label>
     <button type="submit">保存</button>
   </form>
   <p><a href="{% url 'agent_runtime:account_memory_export' %}">导出长期记忆</a></p>
-  <ul>{% for memory in memories %}<li>{{ memory.content }}（至 {{ memory.expires_at|date:"Y-m-d" }}）<form method="post" action="{% url 'agent_runtime:account_memory_delete' memory.public_id %}">{% csrf_token %}<button type="submit">删除</button></form></li>{% empty %}<li>暂无长期记忆。</li>{% endfor %}</ul>
+  <ul>{% for memory in memories %}<li>{{ memory.content }}（至 {{ memory.expires_at|date:"Y-m-d" }}）<form method="post" action="{% url 'agent_runtime:account_memory_delete' memory.public_id %}">{% csrf_token %}<button type="submit" onclick="return confirm('确认删除这条记忆？')">删除</button></form></li>{% empty %}<li>暂无长期记忆。</li>{% endfor %}</ul>
   <h2>近期会话</h2>
-  <ul>{% for session in sessions %}<li>{{ session.title|default:"未命名会话" }}（{{ session.updated_at|date:"Y-m-d H:i" }}）</li>{% empty %}<li>暂无已绑定会话。</li>{% endfor %}</ul>
-  <form method="post" action="{% url 'agent_runtime:account_delete' %}">{% csrf_token %}<button type="submit">删除账户及其数据</button></form>
+  <ul>{% for session in sessions %}<li><a href="/ask/?session={{ session.session_key|urlencode }}">{{ session.title|default:"未命名会话" }}</a>（{{ session.updated_at|date:"Y-m-d H:i" }}）</li>{% empty %}<li>暂无已绑定会话。</li>{% endfor %}</ul>
+  {% if not request.public_workspace %}<form method="post" action="{% url 'agent_runtime:account_delete' %}">{% csrf_token %}<button type="submit">删除账户及其数据</button></form>{% endif %}
 </section>
 {% endblock %}

@@ -1,0 +1,49 @@
+# Application deployment. Use deploy/scripts/release.sh; infrastructure stays separate.
+name: hys-release
+x-app: &app
+  env_file: ${HYS_APP_ENV_FILE:-/home/ubuntu/hys/deploy/releases/20261020-portal/app.env}
+  environment:
+    MYSQL_ROOT_PASSWORD: ""
+  pull_policy: never
+  restart: unless-stopped
+  networks: [existing]
+  cpus: 1
+  mem_limit: 384m
+  pids_limit: 128
+  stop_grace_period: 24h
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: "3"}
+services:
+  web:
+    <<: *app
+    image: ${HYS_IMAGE:-hys-release:20261020-slim}
+    container_name: hys-release-web
+    networks:
+      existing:
+        aliases: [hys-portal-web]
+    volumes: [release_static:/release-static:ro, /home/ubuntu/hys/deploy/releases/20261020-portal/control:/portal-control:ro]
+  worker:
+    <<: *app
+    image: ${HYS_IMAGE:-hys-release:20261020-slim}
+    container_name: hys-release-worker
+    command: [celery, -A, zhongbei_info, worker, --loglevel=INFO, --concurrency=1, --hostname=worker-release@%h, --max-tasks-per-child=100, --max-memory-per-child=200000]
+  agent_worker:
+    <<: *app
+    image: ${HYS_IMAGE:-hys-release:20261020-slim}
+    container_name: hys-release-agent
+    command: [celery, -A, zhongbei_info, worker, --loglevel=INFO, --concurrency=1, "--queues=agent,agent_v2", --hostname=agent-release@%h, --max-tasks-per-child=100, --max-memory-per-child=200000]
+  scheduler:
+    <<: *app
+    image: ${HYS_IMAGE:-hys-release:20261020-slim}
+    container_name: hys-release-scheduler
+    mem_limit: 256m
+    command: [celery, -A, zhongbei_info, beat, --loglevel=INFO, --scheduler=django_celery_beat.schedulers:DatabaseScheduler]
+networks:
+  existing:
+    external: true
+    name: hys_default
+volumes:
+  release_static:
+    external: true
+    name: hys_static_data

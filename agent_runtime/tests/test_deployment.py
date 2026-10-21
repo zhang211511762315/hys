@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import re
 from io import StringIO
 import os
 import subprocess
@@ -43,9 +44,12 @@ def test_compose_has_durable_redis_and_dedicated_agent_worker():
 
     assert "--appendonly" in compose
     assert "redis_data:/data" in compose
-    assert "agent_worker:" in compose
-    assert '"--queues=agent"' in compose
-    assert "condition: service_healthy" in compose
+    app_compose = (ROOT / "docker-compose.release.yml").read_text(encoding="utf-8")
+    assert "agent_worker:" in app_compose
+    queues = re.search(r'"--queues=([^\"]+)"', app_compose)
+    assert queues is not None
+    assert {"agent", "agent_v2"} <= set(queues.group(1).split(","))
+    assert "TRUSTED_PROXY_IPS" not in compose
 
 
 def test_production_nginx_has_no_undeclared_test_upstream():
@@ -143,7 +147,7 @@ def test_research_agent_smoke_reports_ready_runtime():
 
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True
-    assert payload["agent_queue"] == "agent"
+    assert payload["agent_queue"] == "agent_v2"
     assert payload["replay_field"] is True
     assert payload["migration_0005"] is True
     assert "DEEPSEEK_API_KEY" not in output.getvalue()
@@ -169,3 +173,15 @@ def test_existing_agentruns_get_unique_public_ids_during_migration():
     )
     assert add_public_id.field.null is True
     assert add_public_id.field.unique is False
+
+
+def test_dotenv_is_only_loaded_when_explicitly_selected(tmp_path):
+    marker = tmp_path / '.env'
+    marker.write_text('DJANGO_SECRET_KEY=synthetic-explicit-env-only\n')
+    env = dict(os.environ, PYTHONPATH=str(ROOT), HYS_ENV_FILE='')
+    env.pop('DJANGO_SECRET_KEY', None)
+    command = [sys.executable, '-c', 'from zhongbei_info.settings import SECRET_KEY; print(SECRET_KEY)']
+    implicit = subprocess.run(command, cwd=tmp_path, env=env, check=True, text=True, capture_output=True)
+    assert implicit.stdout.strip() == 'dev-only-change-me'
+    explicit = subprocess.run(command, cwd=tmp_path, env=dict(env, HYS_ENV_FILE=str(marker)), check=True, text=True, capture_output=True)
+    assert explicit.stdout.strip() == 'synthetic-explicit-env-only'

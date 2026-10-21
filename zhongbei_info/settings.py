@@ -3,7 +3,9 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+env_file = os.getenv("HYS_ENV_FILE")
+if env_file:
+    load_dotenv(env_file, override=False)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -28,8 +30,10 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "agent_runtime.public_workspace.PublicWorkspaceMiddleware",
+    "agent_runtime.access.ResearchAccessMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -45,6 +49,7 @@ TEMPLATES = [
             "context_processors": [
                 "django.template.context_processors.debug",
                 "django.template.context_processors.request",
+                "aggregator.portal.context",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
             ],
@@ -88,8 +93,8 @@ TIME_ZONE = "Asia/Shanghai"
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = "static/"
-STATIC_ROOT = BASE_DIR / "staticfiles"
+STATIC_URL = os.getenv("RELEASE_STATIC_URL", "static/")
+STATIC_ROOT = os.getenv("RELEASE_STATIC_ROOT", str(BASE_DIR / "staticfiles"))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -116,7 +121,7 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:63
 CELERY_IMPORTS = ("aggregator.tasks_wewe_rss",)
 CELERY_BEAT_SCHEDULE = {}
 CELERY_TASK_ROUTES = {
-    "agent_runtime.tasks.execute_research_run_task": {"queue": "agent"},
+    "agent_runtime.tasks.execute_research_run_task": {"queue": "agent_v2"},
     "agent_runtime.tasks.index_content_item_rag": {"queue": "agent"},
 }
 CELERY_TASK_ACKS_LATE = True
@@ -224,3 +229,15 @@ CRAWL_EMPLOYMENT_PAGE_SIZE = int(os.getenv("CRAWL_EMPLOYMENT_PAGE_SIZE", "15"))
 CRAWL_SINCE_DATE = os.getenv("CRAWL_SINCE_DATE", "2026-01-01")
 SCRAPY_MAX_PAGES_PER_SOURCE = int(os.getenv("SCRAPY_MAX_PAGES_PER_SOURCE", "5000"))
 SCRAPY_MAX_DEPTH = int(os.getenv("SCRAPY_MAX_DEPTH", "6"))
+
+LOGIN_URL = "/accounts/login/"
+TRUSTED_PROXY_IPS = [value.strip() for value in os.getenv("TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",") if value.strip()]
+
+CACHES["pages"] = dict(CACHES["default"])
+if CACHE_URL:
+    CACHES["pages"]["BACKEND"] = "zhongbei_info.page_cache.BestEffortPageCache"
+CACHES["pages"]["KEY_PREFIX"] = "pages"
+
+# Public access is an explicit, reversible deployment mode.
+PUBLIC_WORKSPACE_ENABLED = os.getenv("PUBLIC_WORKSPACE_ENABLED", "0") == "1"
+PORTAL_STATE_FILE = os.getenv("PORTAL_STATE_FILE", "")

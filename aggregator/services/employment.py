@@ -49,7 +49,7 @@ def fetch_employment_documents(
             fetches.append(result)
             try:
                 payload = json.loads(result.text)
-            except json.JSONDecodeError as exc:
+            except json.JSONDecodeError:
                 failures.append(EmploymentFetchFailure(endpoint, EmploymentAPIError(_invalid_payload_message(result.text))))
                 break
             if not isinstance(payload, dict):

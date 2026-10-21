@@ -1,15 +1,8 @@
-from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
 from .urls import normalize_url
-
-
-@dataclass(frozen=True)
-class CrawlPlan:
-    index_url: str
-    article_urls: list[str]
 
 
 def discover_article_links(html: str, base_url: str, max_links: int = 30) -> list[str]:

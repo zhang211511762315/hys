@@ -1,0 +1,6 @@
+{% extends "aggregator/base.html" %}
+{% block title %}登录{% endblock %}
+{% block content %}<section class="panel"><h1>登录研究功能</h1>
+<form method="post">{% csrf_token %}{{ form.as_p }}
+<input type="hidden" name="next" value="{{ next }}"><button class="button" type="submit">登录</button></form>
+<p><a href="{% url 'agent_runtime:signup' %}">创建账户</a></p></section>{% endblock %}

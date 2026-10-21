@@ -3,6 +3,7 @@
 {% block content %}
 <h1>{{ source.name }}</h1>
 <p><a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.url }}</a></p>
+<p class="usage-line" role="status">最近成功更新：{% if source.last_success_at %}{{ source.last_success_at|date:"Y-m-d H:i" }}{% else %}尚无成功更新{% endif %}{% if source.last_error_at and source.last_error_at > source.last_success_at %} · 最近同步异常，正在等待重试{% endif %}</p>
 {% include "aggregator/_toolbar.html" %}
 {% with items=page.object_list %}
   {% include "aggregator/_item_list.html" %}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from time import monotonic
+from agent_runtime.models import ResearchRunOwnership
+
 from typing import Any
 import uuid
 
@@ -40,6 +41,7 @@ def create_research_run(
     goal: str,
     client_request_id: str,
     request_id: str | uuid.UUID | None = None,
+    owner=None,
 ) -> tuple[AgentRun, bool]:
     normalized_id = (client_request_id or "").strip()[:120]
     if not normalized_id:
@@ -48,6 +50,7 @@ def create_research_run(
 
     existing = AgentRun.objects.filter(client_request_id=normalized_id).first()
     if existing is not None:
+        _check_owner(existing, owner)
         return _reuse_research_run(existing, run_request_id), False
 
     try:
@@ -60,6 +63,7 @@ def create_research_run(
                 status=AgentRun.Status.QUEUED,
                 request_id=run_request_id,
             )
+            ResearchRunOwnership.objects.create(run=run, owner=owner)
             append_event(run, "run.created", {"status": AgentRun.Status.QUEUED})
             return run, True
     except IntegrityError:
@@ -71,8 +75,15 @@ def create_research_run(
                 run = AgentRun.objects.select_for_update().get(client_request_id=normalized_id)
             except AgentRun.DoesNotExist:
                 continue
+            _check_owner(run, owner)
             return _reuse_research_run(run, run_request_id), False
     raise RuntimeError("research run duplicate recovery failed")
+
+
+def _check_owner(run, owner):
+    from django.core.exceptions import PermissionDenied
+    if run.owner_id != (owner.pk if owner is not None else None):
+        raise PermissionDenied("request id unavailable")
 
 
 def _reuse_research_run(run: AgentRun, run_request_id: uuid.UUID) -> AgentRun:
@@ -95,6 +106,7 @@ def _reuse_research_run(run: AgentRun, run_request_id: uuid.UUID) -> AgentRun:
 def replay_research_run(
     source: AgentRun,
     request_id: str | uuid.UUID | None = None,
+    owner=None,
 ) -> AgentRun:
     run_request_id = normalized_request_id(request_id)
     with transaction.atomic():
@@ -109,6 +121,7 @@ def replay_research_run(
             prompt_version=source.prompt_version,
             replay_of=source,
         )
+        ResearchRunOwnership.objects.create(run=replay, owner=owner)
         append_event(
             replay,
             "run.replayed",
@@ -123,23 +136,43 @@ def cancel_research_run(run: AgentRun) -> bool:
         locked_run = AgentRun.objects.select_for_update().get(id=run.id)
         if locked_run.status in terminal:
             return False
-        locked_run.status = AgentRun.Status.CANCELLED
-        locked_run.finished_at = timezone.now()
+        if locked_run.status == AgentRun.Status.CANCELLING:
+            return False
+        locked_run.status = AgentRun.Status.CANCELLED if locked_run.status == AgentRun.Status.QUEUED else AgentRun.Status.CANCELLING
+        locked_run.finished_at = timezone.now() if locked_run.status == AgentRun.Status.CANCELLED else None
         locked_run.save(update_fields=["status", "finished_at", "updated_at"])
-        append_event(locked_run, "run.cancelled", {"status": AgentRun.Status.CANCELLED})
+        append_event(locked_run, "run.cancelled" if locked_run.status == AgentRun.Status.CANCELLED else "run.cancel.requested", {"status": locked_run.status})
     return True
+
+
+def finish_cancellation(run):
+    with transaction.atomic():
+        current = AgentRun.objects.select_for_update().get(pk=run.pk)
+        if current.status == AgentRun.Status.CANCELLING:
+            current.status = AgentRun.Status.CANCELLED
+            current.finished_at = timezone.now()
+            current.save(update_fields=["status", "finished_at", "updated_at"])
+            append_event(current, "run.cancelled", {"status": current.status})
+    return {"status": "cancelled"}
 
 
 def execute_research_run(run_id: int) -> dict[str, Any]:
     run = AgentRun.objects.get(id=run_id)
-    if run.status == AgentRun.Status.CANCELLED:
-        return {"status": "cancelled"}
-    registry = build_default_registry()
+    meta = dict(run.dispatch_meta or {})
+    meta["execution_started"] = timezone.now().timestamp()
+    claimed = AgentRun.objects.filter(pk=run_id, status=AgentRun.Status.QUEUED).update(
+        status=AgentRun.Status.PLANNING, current_node="plan", dispatch_meta=meta, updated_at=timezone.now())
+    if not claimed:
+        run.refresh_from_db()
+        return {"status": run.status}
+    run.refresh_from_db()
+    if run.status in {AgentRun.Status.CANCELLED, AgentRun.Status.CANCELLING}:
+        return finish_cancellation(run)
     try:
-        run.status = AgentRun.Status.PLANNING
-        run.current_node = "plan"
-        run.save(update_fields=["status", "current_node", "updated_at"])
+        registry = build_default_registry()
         def answer_builder(_state, items, _outputs):
+            if AgentRun.objects.filter(pk=run.pk, status__in=[AgentRun.Status.CANCELLED, AgentRun.Status.CANCELLING]).exists():
+                raise RuntimeError("research cancelled")
             evidence = [ContentEvidence.model_validate(item) for item in items]
             return generate_research_answer(
                 run.goal,
@@ -217,8 +250,12 @@ def execute_research_run(run_id: int) -> dict[str, Any]:
             "verified": bool(verification["passed"]),
             "replans": int(result.get("replan_count", 0)),
         }
-        run.save(
-            update_fields=[
+        with transaction.atomic():
+            current = AgentRun.objects.select_for_update().get(pk=run.pk)
+            if current.status in {AgentRun.Status.CANCELLED, AgentRun.Status.CANCELLING}:
+                return finish_cancellation(run)
+            run.save(
+                update_fields=[
                 "state_json",
                 "current_node",
                 "status",
@@ -230,9 +267,13 @@ def execute_research_run(run_id: int) -> dict[str, Any]:
         append_event(run, "run.completed", {"status": run.status})
         return result
     except Exception as exc:
-        run.status = AgentRun.Status.FAILED
-        run.finished_at = timezone.now()
-        run.error_message = str(exc)[:2000]
-        run.save(update_fields=["status", "finished_at", "error_message", "updated_at"])
-        append_event(run, "run.failed", {"message": "research execution failed"})
+        with transaction.atomic():
+            current = AgentRun.objects.select_for_update().get(pk=run.pk)
+            if current.status in {AgentRun.Status.CANCELLED, AgentRun.Status.CANCELLING}:
+                return finish_cancellation(run)
+            run.status = AgentRun.Status.FAILED
+            run.finished_at = timezone.now()
+            run.error_message = str(exc)[:2000]
+            run.save(update_fields=["status", "finished_at", "error_message", "updated_at"])
+            append_event(run, "run.failed", {"message": "research execution failed"})
         raise

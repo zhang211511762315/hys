@@ -31,9 +31,11 @@ class AgentRun(TimeStampedModel):
         RUNNING = "running", "运行中"
         SUCCEEDED = "succeeded", "成功"
         FAILED = "failed", "失败"
+        CANCELLING = "cancelling", "取消中"
         CANCELLED = "cancelled", "已取消"
 
     kind = models.CharField(max_length=40, choices=Kind.choices)
+    dispatch_meta = models.JSONField(default=dict, blank=True, null=True)
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     client_request_id = models.CharField(max_length=120, unique=True, null=True, blank=True)
     request_id = models.UUIDField(null=True, blank=True, db_index=True, editable=False)
@@ -62,6 +64,17 @@ class AgentRun(TimeStampedModel):
         verbose_name = "Agent运行"
         verbose_name_plural = "Agent运行"
 
+    @property
+    def owner_id(self):
+        return ResearchRunOwnership.objects.filter(run_id=self.pk).values_list("owner_id", flat=True).first()
+
+    @property
+    def owner(self):
+        try:
+            return self.ownership.owner
+        except ResearchRunOwnership.DoesNotExist:
+            return None
+
     def finish(self, status: str, error_message: str = "", metrics: dict | None = None) -> None:
         self.status = status
         self.finished_at = timezone.now()
@@ -70,6 +83,13 @@ class AgentRun(TimeStampedModel):
         if metrics:
             self.metrics_json = {**(self.metrics_json or {}), **metrics}
         self.save(update_fields=["status", "finished_at", "error_message", "metrics_json", "updated_at"])
+
+
+class ResearchRunOwnership(models.Model):
+    """Additive ownership: real constraints without altering the historical run table."""
+    run = models.OneToOneField(AgentRun, on_delete=models.CASCADE, primary_key=True, related_name="ownership")
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                              related_name="research_run_ownerships")
 
 
 class ResearchAdmissionKey(TimeStampedModel):

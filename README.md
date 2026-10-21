@@ -1,3 +1,5 @@
+> 当前部署与精简后的运维入口见 [deploy/OPERATIONS.md](deploy/OPERATIONS.md)。生产由 Compose/systemd 管理，旧版手动启动说明不用于当前发布。
+
 # 中北信息聚合网站
 
 一个面向中北大学公开信息的生产型研究 Agent。系统从采集、清洗、OCR、去重和发布延伸到可规划、可执行、可验证、可追踪的多步骤研究任务。

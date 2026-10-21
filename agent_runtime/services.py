@@ -11,6 +11,7 @@ import uuid
 
 import httpx
 from django.conf import settings
+from .public_workspace import shared_user
 from django.db import transaction
 from django.db.models import Q, Sum
 from django.urls import reverse
@@ -34,7 +35,6 @@ from .models import (
     MemoryEntry,
     ResearchAdmissionKey,
 )
-from .graph import build_rag_graph
 from .schemas import RagAnswerSchema, SelfHealPlanSchema, UsageReportSchema
 
 
@@ -101,14 +101,14 @@ def get_or_create_session(session_key: str | None, title: str = "", user=None) -
     session = RagSession.objects.filter(session_key=key).first()
     if session is not None:
         user_id = getattr(user, "id", None)
-        if session.user_id != user_id:
+        if session.user_id != user_id and not shared_user(user):
             session = None
             key = new_session_key()
     if session is None:
         session = RagSession.objects.create(session_key=key, title=title[:160], user=user, expires_at=expires_at)
     else:
         update_fields = ["updated_at"]
-        if user is not None and session.user_id is None:
+        if user is not None and session.user_id is None and not shared_user(user):
             session.user = user
             update_fields.append("user")
         session.expires_at = expires_at
@@ -349,7 +349,6 @@ def answer_question_events(
     session = None
     run = None
     retrieval_step = None
-    graph_step = None
     generation_step = None
     usage_event = None
     contexts: list[RagContext] = []
@@ -374,21 +373,6 @@ def answer_question_events(
         )
         contexts = retrieve_contexts(question)
         retrieval_step.finish(AgentStep.Status.SUCCEEDED, output_summary=f"{len(contexts)} context chunk(s)")
-        graph_step = AgentStep.objects.create(
-            run=run,
-            name="rag_state_graph",
-            tool_name="langgraph.StateGraph",
-            input_summary=f"contexts={len(contexts)}",
-        )
-        try:
-            graph = build_rag_graph()
-            if graph is not None:
-                graph.invoke({"question": question, "context_count": len(contexts)})
-                graph_step.finish(AgentStep.Status.SUCCEEDED, output_summary="LangGraph RAG state graph invoked")
-            else:
-                graph_step.finish(AgentStep.Status.SKIPPED, output_summary="LangGraph unavailable")
-        except Exception as exc:
-            graph_step.finish(AgentStep.Status.SKIPPED, error_message=str(exc))
         yield {"type": "session", "session_key": session.session_key}
         for context in contexts:
             yield {
@@ -427,7 +411,7 @@ def answer_question_events(
             status="estimated" if estimate.allowed else "blocked",
         )
 
-        user_message = RagMessage.objects.create(
+        RagMessage.objects.create(
             session=session,
             role=RagMessage.Role.USER,
             content=question,
@@ -518,7 +502,6 @@ def answer_question_events(
         yield {"type": "done"}
     except Exception as exc:
         _finish_step_if_running(generation_step, AgentStep.Status.FAILED, str(exc))
-        _finish_step_if_running(graph_step, AgentStep.Status.FAILED, str(exc))
         _finish_step_if_running(retrieval_step, AgentStep.Status.FAILED, str(exc))
         if usage_event is not None and usage_event.status == LLMUsageEvent.Status.ESTIMATED:
             usage_event.status = LLMUsageEvent.Status.FALLBACK

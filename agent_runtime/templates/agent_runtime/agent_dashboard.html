@@ -148,8 +148,10 @@
         <div class="timeline-item">
           <strong>{{ run.get_kind_display }} · {{ run.get_status_display }}</strong>
           <div class="usage-line">{{ run.started_at }}{% if run.finished_at %} · {{ run.finished_at }}{% endif %} · {{ run.total_cost_cny }} 元</div>
-          {% if run.metrics_json %}<div class="usage-line">metrics: {{ run.metrics_json }}</div>{% endif %}
-          {% if run.error_message %}<p>{{ run.error_message }}</p>{% endif %}
+          {% if request.user.is_staff %}
+            {% if run.metrics_json %}<div class="usage-line">metrics: {{ run.metrics_json }}</div>{% endif %}
+            {% if run.error_message %}<p>{{ run.error_message }}</p>{% endif %}
+          {% endif %}
         </div>
       {% empty %}
         <div class="timeline-item">暂无 Agent 运行记录。</div>

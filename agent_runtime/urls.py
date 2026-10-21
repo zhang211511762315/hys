@@ -5,6 +5,7 @@ from . import views
 app_name = "agent_runtime"
 
 urlpatterns = [
+    path("accounts/login/", views.account_login, name="account_login"),
     path("api/v1/research-runs", views.research_runs, name="research_runs"),
     path("api/v1/research-runs/<uuid:run_id>", views.research_run_detail, name="research_run_detail"),
     path("api/v1/research-runs/<uuid:run_id>/events", views.research_run_events, name="research_run_events"),

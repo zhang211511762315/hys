@@ -1,6 +1,7 @@
 {% extends "aggregator/base.html" %}
 {% block title %}中北信息聚合{% endblock %}
 {% block content %}
+{% include "aggregator/_project_cards.html" %}
 <form class="searchbar" action="{% url 'aggregator:search' %}" method="get">
   <input type="search" name="q" placeholder="搜索通知、学院、实验室、社团" aria-label="搜索">
   <button type="submit">搜索</button>

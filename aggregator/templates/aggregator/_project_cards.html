@@ -1,0 +1,3 @@
+<section aria-label="各项目" class="project-cards">
+{% for project in portal_projects %}<a class="project-card" href="/projects/{{ project.slug }}/"><strong>{{ project.name }}</strong><span>{{ project.summary }}</span></a>{% endfor %}
+</section>

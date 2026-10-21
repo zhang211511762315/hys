@@ -9,7 +9,7 @@
   </div>
   <h1>校园信息研究 Agent</h1>
   <p class="summary">提交一个研究目标，系统会规划任务、调用只读工具、核验引用并输出可追溯结果。</p>
-  <p class="callout">本站已启用 HTTPS；公开研究模式仍不应输入个人隐私、账号或其他敏感信息。</p>
+  <p class="callout">{% if request.public_workspace %}当前为公开共享工作区，可直接创建、查看和管理研究任务。{% else %}研究任务需登录后使用，仅本人和管理员可访问。{% endif %}请勿输入账号凭据等敏感信息。</p>
 </section>
 
 <form class="ask-form" id="research-form">
@@ -20,6 +20,7 @@
 <div class="actions" aria-label="研究任务控制">
   <button class="button secondary" id="cancel-run" type="button" disabled>取消当前任务</button>
   <button class="button secondary" id="replay-run" type="button" disabled>重放上次任务</button>
+  <button class="button secondary" id="refresh-run" type="button" disabled>同步当前状态</button>
   <span class="usage-line" id="run-status" role="status">尚未运行</span>
 </div>
 
@@ -36,22 +37,44 @@
 </section>
 
 <script>
+
   const form = document.getElementById("research-form");
   const goalInput = document.getElementById("goal");
+  const submitButton = form.querySelector('[type="submit"]');
   const answerNode = document.getElementById("answer");
   const traceNode = document.getElementById("trace");
   const citationsNode = document.getElementById("citations");
   const cancelButton = document.getElementById("cancel-run");
   const replayButton = document.getElementById("replay-run");
+  const refreshButton = document.getElementById("refresh-run");
   const statusNode = document.getElementById("run-status");
   const csrfToken = form.querySelector("[name=csrfmiddlewaretoken]").value;
+  const terminalStates = ["succeeded", "failed", "cancelled"];
   let activeRunId = null;
   let activeStream = null;
   let lastTerminalRunId = null;
+  let currentStatus = null;
+  let requestBusy = false;
+  let syncing = false;
+  let syncAgain = false;
+  let lastStreamSync = 0;
+  // An uncertain POST keeps its key and goal until the same request is resolved.
+  let pendingAction = null;
 
   function requestId() {
     if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
     return `browser-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function updateControls() {
+    const running = activeRunId && !terminalStates.includes(currentStatus);
+    submitButton.disabled = requestBusy || syncing || running || (pendingAction && pendingAction.kind !== "create");
+    goalInput.readOnly = requestBusy || Boolean(pendingAction);
+    cancelButton.disabled = requestBusy || !running || currentStatus === "cancelling";
+    replayButton.disabled = requestBusy || syncing || running || !lastTerminalRunId || (pendingAction && pendingAction.kind !== "replay");
+    refreshButton.disabled = requestBusy || syncing || !activeRunId;
+    submitButton.textContent = pendingAction?.kind === "create" ? "重试同一请求" : "开始研究";
+    replayButton.textContent = pendingAction?.kind === "replay" ? "重试同一次重放" : "重放上次任务";
   }
 
   function addTrace(text) {
@@ -61,9 +84,42 @@
     traceNode.appendChild(row);
   }
 
-  async function loadResult(runId) {
-    const response = await fetch(`/api/v1/research-runs/${runId}`);
-    const payload = await response.json();
+  async function requestJSON(url, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(url, {...options, signal: controller.signal});
+      let payload;
+      try { payload = await response.json(); }
+      catch (_) { throw new Error("响应无法解析"); }
+      return {response, payload};
+    } finally { clearTimeout(timer); }
+  }
+
+  function setRunState(status) {
+    currentStatus = status;
+    const labels = {queued: "排队中", planning: "规划中", executing: "执行中", verifying: "核验证据中", running: "执行中", cancelling: "正在取消，请等待当前步骤结束", cancelled: "已取消", succeeded: "已完成", failed: "执行失败", waiting_approval: "等待审批"};
+    statusNode.textContent = `状态：${labels[status] || status}`;
+    updateControls();
+  }
+
+  function showRequestError(response, payload) {
+    if (response.status === 401) {
+      statusNode.textContent = "登录已过期，请重新登录后继续；当前输入仍保留在页面中。";
+      const link = document.createElement("a");
+      link.href = "/accounts/login/?next=/research/";
+      link.textContent = "重新登录";
+      statusNode.appendChild(link);
+    } else {
+      const messages = {403: "请求未获授权，请刷新页面后重试。", 404: "任务不存在或当前账号无权访问。", 429: "任务额度或并发已达上限，请稍后再试。"};
+      statusNode.textContent = messages[response.status] || "请求暂未完成，请重试。";
+      if (response.status >= 500 && pendingAction) {
+        statusNode.textContent += " 将复用同一请求标识，避免重复创建任务。";
+      }
+    }
+  }
+
+  function renderAnswer(payload) {
     if (!payload.answer) return;
     answerNode.textContent = payload.answer.answer;
     citationsNode.innerHTML = "";
@@ -76,105 +132,170 @@
       link.textContent = `${citation.title} · ${citation.source}`;
       citationsNode.appendChild(link);
     }
-  }
-
-  function setRunState(status) {
-    statusNode.textContent = `状态：${status}`;
-    const terminal = ["succeeded", "failed", "cancelled"].includes(status);
-    cancelButton.disabled = !activeRunId || terminal;
-    replayButton.disabled = !lastTerminalRunId;
-  }
-
-  function showRequestError(response, payload) {
-    if (response.status === 429) {
-      answerNode.textContent = payload.error || "请求过于频繁，请稍后再试。";
-    } else {
-      answerNode.textContent = payload.error || "任务创建失败，请稍后重试。";
+    if (payload.answer.fallback || payload.metrics?.fallback) {
+      statusNode.append("；当前使用检索式回答，请结合原始来源核实结论。");
     }
-    setRunState("failed");
+  }
+
+  function closeStream() {
+    activeStream?.close();
+    activeStream = null;
+  }
+
+  async function syncRun(runId = activeRunId) {
+    if (!runId || runId !== activeRunId) return;
+    if (syncing) { syncAgain = true; return; }
+    syncing = true;
+    updateControls();
+    try {
+      const {response, payload} = await requestJSON(`/api/v1/research-runs/${runId}`);
+      if (runId !== activeRunId) return;
+      if (!response.ok) {
+        if ([401, 403, 404].includes(response.status)) closeStream();
+        showRequestError(response, payload);
+        return;
+      }
+      if (terminalStates.includes(currentStatus) && !terminalStates.includes(payload.status)) return;
+      setRunState(payload.status);
+      renderAnswer(payload);
+      if (terminalStates.includes(payload.status)) {
+        closeStream();
+        lastTerminalRunId = runId;
+        if (!payload.answer) answerNode.textContent = payload.status === "cancelled" ? "任务已取消。" : payload.status === "failed" ? "任务执行失败，可重放任务。" : "任务已完成，暂无回答内容。";
+      }
+    } catch (_) {
+      if (runId === activeRunId) statusNode.textContent = "状态同步失败，任务可能仍在运行；可点击“同步当前状态”重试。";
+    } finally {
+      syncing = false;
+      updateControls();
+      if (syncAgain) { syncAgain = false; void syncRun(); }
+    }
   }
 
   function connectStream(payload) {
+    closeStream();
     activeRunId = payload.run_id;
     lastTerminalRunId = null;
-    activeStream = new EventSource(payload.events_url);
-    setRunState(payload.status || "queued");
-    activeStream.addEventListener("plan.created", (message) => addTrace(`已生成计划：${message.data}`));
-    activeStream.addEventListener("tool.completed", (message) => addTrace(`工具完成：${message.data}`));
-    activeStream.addEventListener("answer.delta", (message) => {
-      const eventPayload = JSON.parse(message.data);
-      if (answerNode.textContent === "正在规划…") answerNode.textContent = "";
-      answerNode.textContent += eventPayload.text || "";
-    });
-    activeStream.addEventListener("verification.passed", () => addTrace("证据验证通过"));
-    activeStream.addEventListener("run.completed", async () => {
-      activeStream.close();
-      lastTerminalRunId = activeRunId;
-      setRunState("succeeded");
-      await loadResult(activeRunId);
-    });
-    activeStream.addEventListener("run.cancelled", () => {
-      activeStream.close();
-      lastTerminalRunId = activeRunId;
-      setRunState("cancelled");
-      answerNode.textContent = "任务已取消。";
-    });
-    activeStream.addEventListener("run.failed", () => {
-      activeStream.close();
-      lastTerminalRunId = activeRunId;
-      setRunState("failed");
-      answerNode.textContent = "任务执行失败，请稍后重试。";
-    });
-    activeStream.onerror = () => {
-      addTrace("事件流暂时中断，浏览器将自动尝试恢复。\n");
-      statusNode.textContent = "状态：事件流连接中断";
-    };
-  }
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const goal = goalInput.value.trim();
-    if (!goal) return;
     answerNode.textContent = "正在规划…";
     traceNode.innerHTML = "";
     citationsNode.innerHTML = "";
-    const response = await fetch("/api/v1/research-runs", {
-      method: "POST",
-      headers: {"Content-Type": "application/json", "X-CSRFToken": csrfToken},
-      body: JSON.stringify({goal, client_request_id: requestId()}),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      showRequestError(response, payload);
+    setRunState(payload.status || "queued");
+    if (terminalStates.includes(currentStatus)) {
+      lastTerminalRunId = activeRunId;
+      void syncRun();
       return;
     }
-    connectStream(payload);
-  });
+    const runId = activeRunId;
+    const stream = new EventSource(payload.events_url);
+    activeStream = stream;
+    const isCurrent = () => activeStream === stream && activeRunId === runId;
+    stream.addEventListener("plan.created", message => {
+      if (!isCurrent()) return;
+      setRunState("planning");
+      addTrace(`已生成计划：${message.data}`);
+    });
+    stream.addEventListener("tool.completed", message => {
+      if (!isCurrent()) return;
+      setRunState("executing");
+      addTrace(`工具完成：${message.data}`);
+    });
+    stream.addEventListener("answer.delta", message => {
+      if (!isCurrent()) return;
+      try {
+        const eventPayload = JSON.parse(message.data);
+        if (answerNode.textContent === "正在规划…") answerNode.textContent = "";
+        answerNode.textContent += eventPayload.text || "";
+      } catch (_) { addTrace("收到无法解析的事件，可同步当前状态恢复结果。"); }
+    });
+    stream.addEventListener("verification.passed", () => {
+      if (!isCurrent()) return;
+      setRunState("verifying");
+      addTrace("证据验证通过");
+    });
+    for (const [event, status] of [["run.completed", "succeeded"], ["run.cancelled", "cancelled"], ["run.failed", "failed"]]) {
+      stream.addEventListener(event, () => {
+        if (!isCurrent()) return;
+        closeStream();
+        lastTerminalRunId = runId;
+        setRunState(status);
+        void syncRun(runId);
+      });
+    }
+    stream.onerror = () => {
+      if (!isCurrent()) return;
+      statusNode.textContent = "事件流连接中断，正在重连；任务可能仍在运行。";
+      if (Date.now() - lastStreamSync > 3000) {
+        lastStreamSync = Date.now();
+        void syncRun(runId);
+      }
+    };
+  }
 
+  async function submitAction(kind) {
+    if (requestBusy || syncing || (activeRunId && !terminalStates.includes(currentStatus))) return;
+    if (pendingAction && pendingAction.kind !== kind) return;
+    if (!pendingAction) {
+      const goal = goalInput.value.trim();
+      if (kind === "create" && !goal) return;
+      if (kind === "replay" && !lastTerminalRunId) return;
+      pendingAction = {kind, goal, source: lastTerminalRunId, id: requestId()};
+    }
+    const action = pendingAction;
+    requestBusy = true;
+    updateControls();
+    statusNode.textContent = kind === "create" ? "正在提交研究任务…" : "正在提交重放请求…";
+    try {
+      const url = kind === "create" ? "/api/v1/research-runs" : `/api/v1/research-runs/${action.source}/replay`;
+      const {response, payload} = await requestJSON(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-CSRFToken": csrfToken},
+        body: JSON.stringify({goal: action.goal, client_request_id: action.id}),
+      });
+      if (!response.ok) {
+        if (response.status < 500 && response.status !== 408) pendingAction = null;
+        showRequestError(response, payload);
+        return;
+      }
+      if (!payload.run_id || !payload.events_url) throw new Error("任务响应不完整");
+      pendingAction = null;
+      connectStream(payload);
+    } catch (_) {
+      statusNode.textContent = "网络中断或响应异常，暂无法确认是否已提交；请重试，将复用同一请求标识。当前输入已保留。";
+    } finally {
+      requestBusy = false;
+      updateControls();
+    }
+  }
+
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    void submitAction("create");
+  });
+  replayButton.addEventListener("click", () => { void submitAction("replay"); });
+  refreshButton.addEventListener("click", () => { void syncRun(); });
+  window.addEventListener("online", () => { void syncRun(); });
   cancelButton.addEventListener("click", async () => {
-    if (!activeRunId) return;
-    const response = await fetch(`/api/v1/research-runs/${activeRunId}/cancel`, {
-      method: "POST",
-      headers: {"X-CSRFToken": csrfToken},
-    });
-    const payload = await response.json();
-    if (!response.ok) return showRequestError(response, payload);
-    setRunState(payload.status);
-  });
-
-  replayButton.addEventListener("click", async () => {
-    if (!lastTerminalRunId) return;
-    answerNode.textContent = "正在重放…";
-    traceNode.innerHTML = "";
-    citationsNode.innerHTML = "";
-    const runId = lastTerminalRunId;
-    const response = await fetch(`/api/v1/research-runs/${runId}/replay`, {
-      method: "POST",
-      headers: {"X-CSRFToken": csrfToken},
-    });
-    const payload = await response.json();
-    if (!response.ok) return showRequestError(response, payload);
-    connectStream(payload);
+    if (requestBusy || !activeRunId) return;
+    const runId = activeRunId;
+    requestBusy = true;
+    updateControls();
+    try {
+      const {response, payload} = await requestJSON(`/api/v1/research-runs/${runId}/cancel`, {
+        method: "POST", headers: {"X-CSRFToken": csrfToken},
+      });
+      if (!response.ok) return showRequestError(response, payload);
+      setRunState(payload.status);
+      if (terminalStates.includes(payload.status)) {
+        closeStream();
+        lastTerminalRunId = runId;
+        void syncRun(runId);
+      }
+    } catch (_) {
+      statusNode.textContent = "无法确认取消结果，任务可能仍在运行；请同步当前状态后重试。";
+    } finally {
+      requestBusy = false;
+      updateControls();
+    }
   });
 </script>
 {% endblock %}

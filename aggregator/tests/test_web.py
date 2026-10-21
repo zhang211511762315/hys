@@ -10,6 +10,7 @@ from aggregator.models import Category, ContentItem, ContentSource, CrawlFailure
 @pytest.fixture(autouse=True)
 def clear_page_cache():
     cache.clear()
+    __import__("django.core.cache", fromlist=["caches"]).caches["pages"].clear()
 
 
 @pytest.mark.django_db
@@ -39,14 +40,16 @@ def test_homepage_lists_published_items(client):
 
 
 @pytest.mark.django_db
-def test_public_navigation_hides_admin_and_points_to_agent_project(client):
+def test_public_navigation_organizes_features_under_three_projects(client):
     response = client.get(reverse("aggregator:home"))
     html = response.content.decode()
 
     assert response.status_code == 200
     assert 'href="/admin/"' not in html
-    assert 'href="/agent/"' in html
-    assert "Agent 项目" in html
+    assert 'href="/projects/hys/"' in html
+    assert 'href="/projects/rp-chat/"' in html
+    assert 'href="/projects/mobile-rp/"' in html
+    assert "各项目" in html
 
 
 @pytest.mark.django_db

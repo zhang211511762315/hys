@@ -4,11 +4,16 @@ import math
 import time
 
 from django.conf import settings
-from django.contrib.auth import get_user_model, login, logout
+from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.forms import PasswordChangeForm
+from django.contrib.auth.forms import PasswordChangeForm, AuthenticationForm
 from django.core.cache import cache
-from django.db import IntegrityError, connection, transaction
+from django.db import connection
+from django.core.exceptions import PermissionDenied
+from django.utils.http import url_has_allowed_host_and_scheme
+from .public_workspace import visible
+from .access import client_ip
+from .admission import admit, visible_runs, AdmissionError
 from django.db.models import Count, Max, Sum
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
@@ -26,23 +31,17 @@ from .models import (
     MemoryEntry,
     RagMessage,
     RagSession,
-    ResearchAdmissionKey,
     ToolInvocation,
 )
 from .evaluation.runner import evaluate_promotion_gate
 from .evaluation.strategies import MULTI_AGENT_EXPERIMENTAL, SINGLE_AGENT
-from .research.runtime import cancel_research_run, create_research_run, replay_research_run
+from .research.runtime import cancel_research_run
 from .research.schemas import CreateResearchRunInput
-from .services import answer_question_events, cleanup_expired_memory, new_session_key, save_explicit_memory, sse_event
-from .tasks import execute_research_run_task
+from .services import answer_question_events, new_session_key, save_explicit_memory, sse_event
 from zhongbei_info.observability import log_legacy_rag_runtime_created
 
 RAG_SESSION_COOKIE = "rag_session_key"
 RAG_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
-
-
-class ResearchAdmissionUnavailable(RuntimeError):
-    pass
 
 
 @require_GET
@@ -53,7 +52,7 @@ def ask(request):
     else:
         session_key = request.GET.get("session") or request.COOKIES.get(RAG_SESSION_COOKIE) or new_session_key()
 
-    current_session = RagSession.objects.filter(session_key=session_key, user=user).first()
+    current_session = visible(RagSession.objects.all(), user).filter(session_key=session_key).first()
     if user is not None and current_session is None:
         session_key = new_session_key()
     history_messages = []
@@ -84,6 +83,7 @@ def ask(request):
     return response
 
 
+@login_required
 @require_GET
 def research(request):
     return render(request, "agent_runtime/research.html")
@@ -141,6 +141,34 @@ async def ask_stream(request):
 
 
 @require_http_methods(["GET", "POST"])
+def account_login(request):
+    if request.user.is_authenticated:
+        return redirect("agent_runtime:research")
+    key = "account-login-fails:" + client_ip(request)
+    try:
+        blocked = int(cache.get(key, 0)) >= 8
+    except Exception:
+        return JsonResponse({"error": "login temporarily unavailable"}, status=503)
+    form = AuthenticationForm(request, data=request.POST if request.method == "POST" else None)
+    if request.method == "POST":
+        if blocked:
+            return render(request, "agent_runtime/login.html", {"form": AuthenticationForm(request)}, status=429)
+        if form.is_valid():
+            login(request, form.get_user())
+            cache.delete(key)
+            target = request.POST.get("next") or request.GET.get("next") or "/research/"
+            if not url_has_allowed_host_and_scheme(target, {request.get_host()}, require_https=request.is_secure()):
+                target = "/research/"
+            return redirect(target)
+        try:
+            if not cache.add(key, 1, timeout=600):
+                cache.incr(key)
+        except Exception:
+            return JsonResponse({"error": "login temporarily unavailable"}, status=503)
+    return render(request, "agent_runtime/login.html", {"form": form, "next": request.GET.get("next", "")})
+
+
+@require_http_methods(["GET", "POST"])
 def signup(request):
     if request.user.is_authenticated:
         return redirect("agent_runtime:account_privacy")
@@ -176,8 +204,8 @@ def account_privacy(request):
         request,
         "agent_runtime/account_privacy.html",
         {
-            "memories": MemoryEntry.objects.filter(user=request.user),
-            "sessions": RagSession.objects.filter(user=request.user).order_by("-updated_at")[:20],
+            "memories": visible(MemoryEntry.objects.all(), request.user),
+            "sessions": visible(RagSession.objects.all(), request.user).order_by("-updated_at")[:20],
             "memory_retention_days": settings.MEMORY_RETENTION_DAYS,
         },
     )
@@ -187,7 +215,7 @@ def account_privacy(request):
 @require_POST
 def account_memory_save(request):
     session_key = str(request.POST.get("session", "")).strip()
-    session = RagSession.objects.filter(session_key=session_key, user=request.user).first() if session_key else None
+    session = visible(RagSession.objects.all(), request.user).filter(session_key=session_key).first() if session_key else None
     try:
         save_explicit_memory(request.user, request.POST.get("content", ""), source_session=session)
     except ValueError:
@@ -198,7 +226,7 @@ def account_memory_save(request):
 @login_required
 @require_GET
 def account_memory_export(request):
-    memories = MemoryEntry.objects.filter(user=request.user).order_by("-created_at")
+    memories = visible(MemoryEntry.objects.all(), request.user).order_by("-created_at")
     payload = {
         "memories": [
             {
@@ -219,7 +247,7 @@ def account_memory_export(request):
 @login_required
 @require_POST
 def account_memory_delete(request, memory_id):
-    deleted, _ = MemoryEntry.objects.filter(public_id=memory_id, user=request.user).delete()
+    deleted, _ = visible(MemoryEntry.objects.all(), request.user).filter(public_id=memory_id).delete()
     if not deleted:
         return HttpResponse(status=404)
     return redirect("agent_runtime:account_privacy")
@@ -248,7 +276,7 @@ def memory_collection(request):
     if request.method == "GET":
         memories = [
             {"id": str(memory.public_id), "content": memory.content}
-            for memory in MemoryEntry.objects.filter(user=user)
+            for memory in visible(MemoryEntry.objects.all(), user)
         ]
         return JsonResponse({"memories": memories})
     try:
@@ -257,7 +285,7 @@ def memory_collection(request):
         session_key = str(payload.get("session", ""))
     except (TypeError, ValueError):
         return JsonResponse({"error": "invalid request"}, status=400)
-    session = RagSession.objects.filter(session_key=session_key, user=user).first() if session_key else None
+    session = visible(RagSession.objects.all(), user).filter(session_key=session_key).first() if session_key else None
     try:
         memory = save_explicit_memory(user, content, source_session=session)
     except ValueError:
@@ -270,7 +298,7 @@ def memory_detail(request, memory_id):
     user, error = _memory_user_or_error(request)
     if error:
         return error
-    deleted, _ = MemoryEntry.objects.filter(public_id=memory_id, user=user).delete()
+    deleted, _ = visible(MemoryEntry.objects.all(), user).filter(public_id=memory_id).delete()
     if not deleted:
         return JsonResponse({"error": "not found"}, status=404)
     return HttpResponse(status=204)
@@ -288,7 +316,10 @@ def agent_dashboard(request):
         requests=Sum("request_count"),
     )
     runs_by_kind = AgentRun.objects.values("kind").annotate(count=Count("id")).order_by("kind")
-    latest_runs = AgentRun.objects.prefetch_related("steps").order_by("-created_at")[:10]
+    latest_runs = AgentRun.objects.all()
+    if not request.user.is_staff:
+        latest_runs = latest_runs.exclude(trigger__startswith="research")
+    latest_runs = latest_runs.order_by("-created_at")[:10]
     latest_usage = LLMUsageEvent.objects.order_by("-created_at")[:10]
     latest_eval = AgentRun.objects.filter(kind=AgentRun.Kind.EVAL).order_by("-created_at").first()
     latest_evalops_comparison = _latest_evalops_comparison()
@@ -440,83 +471,26 @@ def internal_metrics(request):
 @require_POST
 def research_runs(request):
     try:
-        payload = CreateResearchRunInput.model_validate_json(request.body)
-    except Exception:
+        raw = json.loads(request.body or "{}")
+        if any(k in raw for k in ["owner", "owner_id", "user", "user_id"]):
+            return JsonResponse({"error": "owner is server managed"}, status=400)
+        payload = CreateResearchRunInput.model_validate(raw)
+        run, created = admit(request.user, payload.goal, payload.client_request_id,
+                             client_ip(request), getattr(request, "request_id", None))
+    except PermissionDenied:
+        return JsonResponse({"error": "not found"}, status=404)
+    except AdmissionError as exc:
+        return JsonResponse({"error": str(exc)}, status=exc.status)
+    except (ValueError, TypeError):
         return JsonResponse({"error": "invalid request"}, status=400)
-    client_ip = _client_ip(request)
-    try:
-        for _ in range(2):
-            admission_key = _get_research_admission_key(payload.client_request_id)
-            admission_error = None
-            run = None
-            created = False
-            retry_admission_key = False
-            with transaction.atomic():
-                locked_key = (
-                    ResearchAdmissionKey.objects.select_for_update()
-                    .filter(pk=admission_key.pk)
-                    .first()
-                )
-                if locked_key is None:
-                    retry_admission_key = True
-                else:
-                    locked_key.updated_at = timezone.now()
-                    locked_key.save(update_fields=["updated_at"])
-                    if request.user.is_authenticated:
-                        get_user_model().objects.select_for_update().get(pk=request.user.pk)
-                    existing = AgentRun.objects.filter(client_request_id=payload.client_request_id).first()
-                    if existing is None:
-                        if not _consume_daily_research_quota(client_ip):
-                            admission_error = "daily limit exceeded"
-                        active_statuses = [
-                            AgentRun.Status.QUEUED,
-                            AgentRun.Status.PLANNING,
-                            AgentRun.Status.EXECUTING,
-                            AgentRun.Status.VERIFYING,
-                            AgentRun.Status.RUNNING,
-                        ]
-                        if admission_error is None and AgentRun.objects.filter(trigger=f"research_api:{client_ip}", status__in=active_statuses).count() >= settings.RESEARCH_AGENT_CONCURRENT_LIMIT:
-                            admission_error = "concurrent limit exceeded"
-                    if admission_error is None:
-                        run, created = create_research_run(
-                            payload.goal,
-                            payload.client_request_id,
-                            request_id=request.request_id,
-                        )
-                        if created:
-                            run.trigger = f"research_api:{client_ip}"
-                            run.save(update_fields=["trigger", "updated_at"])
-                    elif not AgentRun.objects.filter(client_request_id=payload.client_request_id).exists():
-                        locked_key.delete()
-            if retry_admission_key:
-                continue
-            if admission_error is not None:
-                return JsonResponse({"error": admission_error}, status=429)
-            break
-        else:
-            raise ResearchAdmissionUnavailable("research admission key unavailable")
-    except ResearchAdmissionUnavailable:
-        _cleanup_orphan_research_admission_key(payload.client_request_id)
-        return JsonResponse({"error": "admission temporarily unavailable"}, status=503)
-    except Exception:
-        _cleanup_orphan_research_admission_key(payload.client_request_id)
-        raise
     request.agent_run_id = str(run.public_id)
-    if created:
-        execute_research_run_task.delay(str(run.public_id))
-    return JsonResponse(
-        {
-            "run_id": str(run.public_id),
-            "status": run.status,
-            "events_url": f"/api/v1/research-runs/{run.public_id}/events",
-        },
-        status=202 if created else 200,
-    )
+    return JsonResponse({"run_id": str(run.public_id), "status": run.status,
+                         "events_url": f"/api/v1/research-runs/{run.public_id}/events"}, status=202 if created else 200)
 
 
 @require_POST
 def cancel_research_run_view(request, run_id):
-    run = AgentRun.objects.filter(public_id=run_id).first()
+    run = visible_runs(request.user).filter(public_id=run_id).first()
     if run is None:
         return JsonResponse({"error": "not found"}, status=404)
     request.agent_run_id = str(run.public_id)
@@ -527,12 +501,25 @@ def cancel_research_run_view(request, run_id):
 
 @require_POST
 def replay_research_run_view(request, run_id):
-    source = AgentRun.objects.filter(public_id=run_id).first()
+    source = visible_runs(request.user).filter(public_id=run_id).first()
     if source is None:
         return JsonResponse({"error": "not found"}, status=404)
-    replay = replay_research_run(source, request_id=request.request_id)
+    try:
+        raw = json.loads(request.body or "{}") if request.content_type == "application/json" else request.POST.dict()
+        if any(k in raw for k in ["owner", "owner_id", "user", "user_id"]):
+            return JsonResponse({"error": "owner is server managed"}, status=400)
+        key = str(raw.get("client_request_id") or ("replay-" + __import__("uuid").uuid4().hex)).strip()
+        if not 8 <= len(key) <= 120:
+            raise ValueError("invalid key")
+        replay, created = admit(request.user, source.goal, key, client_ip(request),
+                                 getattr(request, "request_id", None), replay_of=source)
+    except PermissionDenied:
+        return JsonResponse({"error": "not found"}, status=404)
+    except AdmissionError as exc:
+        return JsonResponse({"error": str(exc)}, status=exc.status)
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "invalid request"}, status=400)
     request.agent_run_id = str(replay.public_id)
-    execute_research_run_task.delay(str(replay.public_id))
     return JsonResponse(
         {
             "run_id": str(replay.public_id),
@@ -540,13 +527,13 @@ def replay_research_run_view(request, run_id):
             "status": replay.status,
             "events_url": f"/api/v1/research-runs/{replay.public_id}/events",
         },
-        status=202,
+        status=202 if created else 200,
     )
 
 
 @require_GET
 def research_run_detail(request, run_id):
-    run = AgentRun.objects.filter(public_id=run_id).first()
+    run = visible_runs(request.user).filter(public_id=run_id).first()
     if run is None:
         return JsonResponse({"error": "not found"}, status=404)
     request.agent_run_id = str(run.public_id)
@@ -563,7 +550,7 @@ def research_run_detail(request, run_id):
 
 @require_GET
 def research_run_events(request, run_id):
-    run = AgentRun.objects.filter(public_id=run_id).first()
+    run = visible_runs(request.user).filter(public_id=run_id).first()
     if run is None:
         return JsonResponse({"error": "not found"}, status=404)
     request.agent_run_id = str(run.public_id)
@@ -574,74 +561,33 @@ def research_run_events(request, run_id):
 
     snapshot_only = request.GET.get("snapshot") == "1"
 
-    def stream():
+    def read_events(sequence):
+        events = list(run.events.filter(sequence__gt=sequence).order_by("sequence").values("sequence", "event_type", "payload_json")[:100])
+        status = AgentRun.objects.filter(pk=run.pk).values_list("status", flat=True).first()
+        return events, status
+
+    async def stream():
         last_sequence = after
         deadline = time.monotonic() + 105
+        heartbeat = time.monotonic()
         terminal = {AgentRun.Status.SUCCEEDED, AgentRun.Status.FAILED, AgentRun.Status.CANCELLED}
         while True:
-            events = list(run.events.filter(sequence__gt=last_sequence).order_by("sequence")[:100])
+            events, current_status = await asyncio.to_thread(read_events, last_sequence)
             for event in events:
-                last_sequence = event.sequence
-                yield f"id: {event.sequence}\nevent: {event.event_type}\ndata: {json.dumps(event.payload_json, ensure_ascii=False)}\n\n"
-            current_status = AgentRun.objects.filter(id=run.id).values_list("status", flat=True).first()
+                last_sequence = event["sequence"]
+                yield f"id: {last_sequence}\nevent: {event['event_type']}\ndata: {json.dumps(event['payload_json'], ensure_ascii=False)}\n\n"
             if snapshot_only or (current_status in terminal and not events) or time.monotonic() >= deadline:
                 break
+            if time.monotonic() - heartbeat >= 15:
+                yield ": keep-alive\n\n"
+                heartbeat = time.monotonic()
             if not events:
-                time.sleep(0.25)
+                await asyncio.sleep(0.25)
 
     response = StreamingHttpResponse(stream(), content_type="text/event-stream; charset=utf-8")
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
     return response
-
-
-def _client_ip(request) -> str:
-    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()[:64]
-    return (request.META.get("REMOTE_ADDR") or "unknown")[:64]
-
-
-def _get_research_admission_key(client_request_id: str) -> ResearchAdmissionKey:
-    for _ in range(3):
-        try:
-            with transaction.atomic():
-                return ResearchAdmissionKey.objects.create(client_request_id=client_request_id)
-        except IntegrityError:
-            try:
-                with transaction.atomic():
-                    return ResearchAdmissionKey.objects.get(client_request_id=client_request_id)
-            except ResearchAdmissionKey.DoesNotExist:
-                continue
-    raise ResearchAdmissionUnavailable("research admission key unavailable")
-
-
-def _cleanup_orphan_research_admission_key(client_request_id: str) -> None:
-    with transaction.atomic():
-        key = (
-            ResearchAdmissionKey.objects.select_for_update()
-            .filter(client_request_id=client_request_id)
-            .first()
-        )
-        if key is not None and not AgentRun.objects.filter(client_request_id=client_request_id).exists():
-            key.delete()
-
-
-def _consume_daily_research_quota(client_ip: str) -> bool:
-    limit = max(0, int(settings.RESEARCH_AGENT_DAILY_LIMIT))
-    if limit == 0:
-        return False
-    key = f"research-agent:daily:{timezone.localdate().isoformat()}:{client_ip}"
-    if cache.add(key, 1, timeout=60 * 60 * 26):
-        return True
-    count = cache.incr(key)
-    if count <= limit:
-        return True
-    try:
-        cache.decr(key)
-    except ValueError:
-        pass
-    return False
 
 
 def _display_eval_metrics(metrics: dict) -> dict:
