@@ -84,3 +84,51 @@ def test_long_duplicate_titles_fit_the_database_and_share_a_group():
     short = ContentItem.objects.create(source=source, title='合成短标题', canonical_url='https://example.invalid/short')
     _link_duplicate_group(short)
     assert short.duplicate_group.fingerprint == 'title:' + title_fingerprint(short.title)
+
+
+@pytest.mark.parametrize('model_name', ['category', 'tag'])
+def test_shared_admin_classification_create_edit_delete(client, settings, model_name):
+    from aggregator import models
+    call_command('prepare_public_workspace', verbosity=0)
+    settings.PUBLIC_WORKSPACE_ENABLED = True
+    model = getattr(models, model_name.title())
+    base = f'/admin/aggregator/{model_name}/'
+    assert client.post(base+'add/', {'name':'Synthetic classification','slug':'synthetic-classification','_save':'Save'}).status_code == 302
+    row = model.objects.get(slug='synthetic-classification')
+    assert client.post(base+f'{row.pk}/change/', {'name':'Synthetic updated','slug':row.slug,'_save':'Save'}).status_code == 302
+    row.refresh_from_db(); assert row.name == 'Synthetic updated'
+    assert client.post(base+f'{row.pk}/delete/', {'post':'yes'}).status_code == 302
+    assert not model.objects.filter(pk=row.pk).exists()
+
+
+def test_shared_admin_content_actions_persist_without_external_models(client, settings):
+    from aggregator.models import ContentItem
+    call_command('prepare_public_workspace', verbosity=0)
+    settings.PUBLIC_WORKSPACE_ENABLED = True
+    source = Source.objects.create(name='synthetic', url='https://example.invalid/', source_type='manual_url')
+    raw = RawDocument.objects.create(source=source, url='https://example.invalid/doc', content_hash='synthetic-admin',
+                                     html='<html><body>合成就业招聘通知，报名截止时间为本周五。</body></html>')
+    first = ContentItem.objects.create(source=source, raw_document=raw, title='Synthetic one', canonical_url='https://example.invalid/one', content_text='合成就业招聘通知')
+    second = ContentItem.objects.create(source=source, title='Synthetic two', canonical_url='https://example.invalid/two', content_text='合成就业招聘通知')
+    def action(name, ids):
+        response = client.post('/admin/aggregator/contentitem/', {'action':name,'_selected_action':[str(pk) for pk in ids]})
+        assert response.status_code == 302
+        first.refresh_from_db()
+    action('publish_items', [first.pk]); assert first.is_public and first.status == 'published'
+    action('block_items', [first.pk]); assert not first.is_public and first.status == 'blocked'
+    action('reextract_items', [first.pk]); assert '合成就业招聘通知' in first.content_text and not first.is_public
+    action('reclassify_items', [first.pk]); assert first.ai_provider == 'rules' and first.category_id and first.summary
+    action('merge_duplicate_items', [first.pk, second.pk]); second.refresh_from_db()
+    assert first.duplicate_group_id == second.duplicate_group_id
+
+
+def test_shared_admin_manual_crawl_queues_only_the_selected_synthetic_source(client, settings, monkeypatch):
+    from unittest.mock import Mock
+    call_command('prepare_public_workspace', verbosity=0)
+    settings.PUBLIC_WORKSPACE_ENABLED = True
+    source = Source.objects.create(name='synthetic', url='https://example.invalid/', source_type='manual_url')
+    queued = Mock()
+    monkeypatch.setattr('aggregator.admin.crawl_source.delay', queued)
+    response = client.post('/admin/aggregator/source/', {'action':'run_crawl_now','_selected_action':[str(source.pk)]})
+    assert response.status_code == 302
+    queued.assert_called_once_with(source.pk)

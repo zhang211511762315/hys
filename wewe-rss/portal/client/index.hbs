@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="{{ iconUrl }}" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WeWe RSS</title>
+    <meta name="description" content="更好的公众号订阅方式" />
+    <script type="module" crossorigin src="/hys/rss/dash/assets/index-DdrV8jkS.js"></script>
+    <link rel="stylesheet" crossorigin href="/hys/rss/dash/assets/index-CGqyX068.css">
+  </head>
+  <body>
+    <nav aria-label="面包屑" style="padding:10px 16px;font:14px system-ui;display:flex;gap:10px;flex-wrap:wrap"><a href="/projects/">各项目</a> / <a href="/projects/hys/">HYS 校园信息</a> / 公众号订阅</nav>
+    <nav aria-label="公众号功能" style="padding:0 16px 10px;font:14px system-ui;display:flex;gap:14px;flex-wrap:wrap"><a href="/hys/rss/dash/">订阅、文章与更新状态</a><a href="/hys/rss/dash/accounts">账号绑定</a><a href="/admin/aggregator/crawljob/">HYS 更新任务</a><a href="/admin/aggregator/crawlfailure/">HYS 失败记录</a></nav>
+    <div id="root"></div>
+    <script>
+      window.__WEWE_RSS_SERVER_ORIGIN_URL__ = '{{ weweRssServerOriginUrl }}';
+      window.__WEWE_RSS_ENABLED_AUTH_CODE__ = {{#if enabledAuthCode}}true{{else}}false{{/if}};
+    </script>
+  </body>
+</html>

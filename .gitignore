@@ -24,3 +24,7 @@ docs/deploy-caddy-gunicorn-systemd-prompt.md
 *.pem
 *.key
 *.creds
+
+# Private RSS runtime environment and bounded local backups
+/wewe-rss/portal-container*.env
+/wewe-rss/backups/

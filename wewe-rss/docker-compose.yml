@@ -2,7 +2,14 @@ version: '3.9'
 
 services:
   app:
-    image: cooderl/wewe-rss-sqlite@sha256:349a1ec9478d767de72e69bf5a7cf12e6bb0df879bbd8b4522cd82819d003766
+    image: schoolsearch-rss:20261103-audit
+    pull_policy: never
+    init: true
+    env_file: ./portal-container.env
+    command: ["node", "dist/main"]
+    mem_limit: 256m
+    memswap_limit: 512m
+    stop_grace_period: 24h
     container_name: wewe-rss
     restart: unless-stopped
     logging:
@@ -14,8 +21,10 @@ services:
       - 127.0.0.1:4000:4000
     environment:
       - DATABASE_TYPE=sqlite
-      - AUTH_CODE=${WEWE_RSS_AUTH_CODE:?set WEWE_RSS_AUTH_CODE}
-      - SERVER_ORIGIN_URL=http://127.0.0.1:4000
+      - AUTH_CODE=
+      - SCHOOLSEARCH_PUBLIC_WORKSPACE=1
+      - SCHOOLSEARCH_PUBLIC_ORIGIN=https://schoolsearchzzychen.online
+      - SERVER_ORIGIN_URL=https://schoolsearchzzychen.online/hys/rss
       - CRON_EXPRESSION=35 5,17 * * *
       - TZ=Asia/Shanghai
     volumes:

@@ -6,4 +6,4 @@
 - 三项目导航由 `aggregator/portal.py` 驱动；WeWe RSS 属于 HYS 来源管理，不新增独立一级 RSS 或抖音项目。
 - 基础设施与应用 Compose 分开；发布先维护排空，回退只切应用，不恢复数据库或删除增量 schema。
 
-当前交付：`/home/ubuntu/projects/codex-workspace/simplification-20261020/REPORT.md`。旧交付报告仅描述历史。
+当前交付：`/home/ubuntu/projects/codex-workspace/functional-audit-20261103/REPORT.md`。旧交付报告仅描述历史。
