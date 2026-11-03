@@ -3,7 +3,7 @@
 set -euo pipefail
 [ "${1:-}" = --maintenance ] || { echo "用法: sudo release.sh --maintenance [镜像标签]" >&2; exit 2; }
 cd "$(dirname "$0")/../.."
-export HYS_IMAGE="${2:-hys-release:20261103-audit}"
+export HYS_IMAGE="${2:-hys-release:20261103-audit2}"
 compose=(docker compose -p hys-release -f docker-compose.release.yml)
 "${compose[@]}" config --quiet
 docker image inspect "$HYS_IMAGE" >/dev/null

@@ -51,6 +51,20 @@ def test_document_list_does_not_fetch_bodies_but_change_form_still_can(client, s
     assert detail.status_code == 200
     assert marker.encode() in detail.content
 
+    from aggregator.models import ContentItem
+    item = ContentItem.objects.create(source=source, raw_document=doc, title='Synthetic item',
+                                      canonical_url='https://example.invalid/item')
+    with CaptureQueriesContext(connection) as queries:
+        change = client.get(f'/admin/aggregator/contentitem/{item.pk}/change/')
+    assert change.status_code == 200
+    soup = BeautifulSoup(change.content, 'html.parser')
+    assert soup.select_one('input#id_raw_document')
+    assert soup.select_one('select#id_raw_document') is None
+    # Selected-object labels may fetch one document, never an unbounded table.
+    relation_queries = [q['sql'] for q in queries if 'FROM "aggregator_rawdocument"' in q['sql']]
+    assert all('WHERE' in sql for sql in relation_queries)
+    assert marker.encode() not in change.content
+
 
 def test_long_duplicate_titles_fit_the_database_and_share_a_group():
     from aggregator.models import ContentItem, DuplicateGroup

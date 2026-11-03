@@ -1,4 +1,5 @@
 from django.contrib import admin
+from zhongbei_info.admin_widgets import BoundedRelationsAdmin
 
 from .models import (
     AgentApproval,
@@ -26,7 +27,7 @@ class AgentStepInline(admin.TabularInline):
 
 
 @admin.register(AgentRun)
-class AgentRunAdmin(admin.ModelAdmin):
+class AgentRunAdmin(BoundedRelationsAdmin):
     list_display = ("public_id", "kind", "trigger", "status", "started_at", "finished_at", "total_cost_cny")
     list_filter = ("kind", "status")
     search_fields = ("trigger", "error_message")
@@ -35,7 +36,7 @@ class AgentRunAdmin(admin.ModelAdmin):
 
 
 @admin.register(EvaluationRun)
-class EvaluationRunAdmin(admin.ModelAdmin):
+class EvaluationRunAdmin(BoundedRelationsAdmin):
     list_display = ("id", "dataset_version", "strategy", "mode", "status", "started_at", "finished_at")
     list_filter = ("dataset_version", "strategy", "mode", "status")
     search_fields = ("dataset_version", "strategy", "error_message")
@@ -43,7 +44,7 @@ class EvaluationRunAdmin(admin.ModelAdmin):
 
 
 @admin.register(EvaluationCaseResult)
-class EvaluationCaseResultAdmin(admin.ModelAdmin):
+class EvaluationCaseResultAdmin(BoundedRelationsAdmin):
     list_display = ("case_id", "evaluation_run", "category", "status", "latency_ms", "cost_cny")
     list_filter = ("category", "status")
     search_fields = ("case_id", "goal", "expected_task_type", "actual_task_type")
@@ -66,7 +67,7 @@ class EvaluationCaseResultAdmin(admin.ModelAdmin):
 
 
 @admin.register(AgentApproval)
-class AgentApprovalAdmin(admin.ModelAdmin):
+class AgentApprovalAdmin(BoundedRelationsAdmin):
     list_display = ("public_id", "tool_name", "status", "run", "decided_by", "created_at")
     list_filter = ("status", "tool_name")
     readonly_fields = (
@@ -100,22 +101,22 @@ class AgentApprovalAdmin(admin.ModelAdmin):
 
 
 @admin.register(ContentChunk)
-class ContentChunkAdmin(admin.ModelAdmin):
+class ContentChunkAdmin(BoundedRelationsAdmin):
     list_display = ("content_item", "chunk_index", "search_document_id", "updated_at")
     search_fields = ("text", "content_item__title")
     readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(RagSession)
-class RagSessionAdmin(admin.ModelAdmin):
+class RagSessionAdmin(BoundedRelationsAdmin):
     list_display = ("title", "user", "session_key", "total_input_tokens", "total_output_tokens", "total_cost_cny", "expires_at", "updated_at")
     search_fields = ("title", "session_key")
     readonly_fields = ("created_at", "updated_at")
 
 
-admin.site.register(RagMessage)
-admin.site.register(MemoryEntry)
-admin.site.register(RagCitation)
-admin.site.register(LLMUsageEvent)
-admin.site.register(AgentEvent)
-admin.site.register(ToolInvocation)
+admin.site.register(RagMessage, BoundedRelationsAdmin)
+admin.site.register(MemoryEntry, BoundedRelationsAdmin)
+admin.site.register(RagCitation, BoundedRelationsAdmin)
+admin.site.register(LLMUsageEvent, BoundedRelationsAdmin)
+admin.site.register(AgentEvent, BoundedRelationsAdmin)
+admin.site.register(ToolInvocation, BoundedRelationsAdmin)

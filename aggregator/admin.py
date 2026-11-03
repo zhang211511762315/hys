@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.text import slugify
+from zhongbei_info.admin_widgets import BoundedRelationsAdmin
 
 from .models import (
     AIJob,
@@ -30,7 +31,7 @@ def run_crawl_now(modeladmin, request, queryset):
 
 
 @admin.register(Source)
-class SourceAdmin(admin.ModelAdmin):
+class SourceAdmin(BoundedRelationsAdmin):
     list_display = (
         "name",
         "source_type",
@@ -51,7 +52,7 @@ class SourceAdmin(admin.ModelAdmin):
 
 
 @admin.register(ContentItem)
-class ContentItemAdmin(admin.ModelAdmin):
+class ContentItemAdmin(BoundedRelationsAdmin):
     list_display = (
         "title",
         "source",
@@ -150,19 +151,19 @@ class ContentItemAdmin(admin.ModelAdmin):
 
 
 @admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
+class CategoryAdmin(BoundedRelationsAdmin):
     prepopulated_fields = {"slug": ("name",)}
     search_fields = ("name",)
 
 
 @admin.register(Tag)
-class TagAdmin(admin.ModelAdmin):
+class TagAdmin(BoundedRelationsAdmin):
     prepopulated_fields = {"slug": ("name",)}
     search_fields = ("name",)
 
 
 @admin.register(CrawlJob)
-class CrawlJobAdmin(admin.ModelAdmin):
+class CrawlJobAdmin(BoundedRelationsAdmin):
     list_display = (
         "source",
         "target_url",
@@ -188,7 +189,7 @@ class CrawlJobAdmin(admin.ModelAdmin):
 
 
 @admin.register(RawDocument)
-class RawDocumentAdmin(admin.ModelAdmin):
+class RawDocumentAdmin(BoundedRelationsAdmin):
     list_display = ("id", "title", "source", "fetched_at")
     list_select_related = ("source",)
     list_per_page = 50
@@ -202,10 +203,10 @@ class RawDocumentAdmin(admin.ModelAdmin):
         return super().get_queryset(request).defer("html", "extracted_text")
 
 
-admin.site.register(CrawlFailure)
-admin.site.register(CrawlNetworkEvent)
-admin.site.register(DuplicateGroup)
-admin.site.register(ContentSource)
-admin.site.register(Attachment)
-admin.site.register(AIJob)
-admin.site.register(AIUsageDaily)
+admin.site.register(CrawlFailure, BoundedRelationsAdmin)
+admin.site.register(CrawlNetworkEvent, BoundedRelationsAdmin)
+admin.site.register(DuplicateGroup, BoundedRelationsAdmin)
+admin.site.register(ContentSource, BoundedRelationsAdmin)
+admin.site.register(Attachment, BoundedRelationsAdmin)
+admin.site.register(AIJob, BoundedRelationsAdmin)
+admin.site.register(AIUsageDaily, BoundedRelationsAdmin)
