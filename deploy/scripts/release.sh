@@ -3,7 +3,7 @@
 set -euo pipefail
 [ "${1:-}" = --maintenance ] || { echo "用法: sudo release.sh --maintenance [镜像标签]" >&2; exit 2; }
 cd "$(dirname "$0")/../.."
-export HYS_IMAGE="${2:-hys-release:20261020-slim}"
+export HYS_IMAGE="${2:-hys-release:20261103-audit}"
 compose=(docker compose -p hys-release -f docker-compose.release.yml)
 "${compose[@]}" config --quiet
 docker image inspect "$HYS_IMAGE" >/dev/null
@@ -26,6 +26,7 @@ if ! docker exec hys-nginx-1 nginx -t; then cp "$saved" deploy/nginx.conf; rm -f
 docker exec hys-nginx-1 nginx -s reload
 trap 'result=$?; if [ "$result" -ne 0 ]; then echo "发布未完成，维护入口保留；原代理配置: $saved。按运维说明恢复后再重跑或回退。" >&2; fi' EXIT
 "${compose[@]}" stop --timeout -1 scheduler
+python3 deploy/scripts/wait_http_idle.py hys-release-web 8000
 "${compose[@]}" stop --timeout -1 web worker agent_worker
 "${compose[@]}" up -d --no-deps --pull never web worker agent_worker
 for attempt in $(seq 1 60); do

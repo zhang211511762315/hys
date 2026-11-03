@@ -17,7 +17,7 @@ x-app: &app
 services:
   web:
     <<: *app
-    image: ${HYS_IMAGE:-hys-release:20261020-slim}
+    image: ${HYS_IMAGE:-hys-release:20261103-audit}
     container_name: hys-release-web
     networks:
       existing:
@@ -25,17 +25,17 @@ services:
     volumes: [release_static:/release-static:ro, /home/ubuntu/hys/deploy/releases/20261020-portal/control:/portal-control:ro]
   worker:
     <<: *app
-    image: ${HYS_IMAGE:-hys-release:20261020-slim}
+    image: ${HYS_IMAGE:-hys-release:20261103-audit}
     container_name: hys-release-worker
     command: [celery, -A, zhongbei_info, worker, --loglevel=INFO, --concurrency=1, --hostname=worker-release@%h, --max-tasks-per-child=100, --max-memory-per-child=200000]
   agent_worker:
     <<: *app
-    image: ${HYS_IMAGE:-hys-release:20261020-slim}
+    image: ${HYS_IMAGE:-hys-release:20261103-audit}
     container_name: hys-release-agent
     command: [celery, -A, zhongbei_info, worker, --loglevel=INFO, --concurrency=1, "--queues=agent,agent_v2", --hostname=agent-release@%h, --max-tasks-per-child=100, --max-memory-per-child=200000]
   scheduler:
     <<: *app
-    image: ${HYS_IMAGE:-hys-release:20261020-slim}
+    image: ${HYS_IMAGE:-hys-release:20261103-audit}
     container_name: hys-release-scheduler
     mem_limit: 256m
     command: [celery, -A, zhongbei_info, beat, --loglevel=INFO, --scheduler=django_celery_beat.schedulers:DatabaseScheduler]

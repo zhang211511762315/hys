@@ -151,7 +151,12 @@
       const {response, payload} = await requestJSON(`/api/v1/research-runs/${runId}`);
       if (runId !== activeRunId) return;
       if (!response.ok) {
-        if ([401, 403, 404].includes(response.status)) closeStream();
+        if ([401, 403, 404].includes(response.status)) {
+          closeStream();
+          activeRunId = null;
+          currentStatus = null;
+          lastTerminalRunId = null;
+        }
         showRequestError(response, payload);
         return;
       }
@@ -175,6 +180,9 @@
   function connectStream(payload) {
     closeStream();
     activeRunId = payload.run_id;
+    const address = new URL(window.location.href);
+    address.searchParams.set("run", activeRunId);
+    window.history.replaceState(null, "", address);
     lastTerminalRunId = null;
     answerNode.textContent = "正在规划…";
     traceNode.innerHTML = "";
@@ -297,5 +305,16 @@
       updateControls();
     }
   });
+
+  // The URL identifies the accepted task; the server still checks visibility.
+  const restoredRunId = new URL(window.location.href).searchParams.get("run");
+  if (restoredRunId) {
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(restoredRunId)) {
+      connectStream({run_id: restoredRunId, events_url: `/api/v1/research-runs/${restoredRunId}/events`});
+      void syncRun();
+    } else {
+      statusNode.textContent = "任务地址无效，请从运行记录重新打开。";
+    }
+  }
 </script>
 {% endblock %}

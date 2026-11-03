@@ -147,6 +147,7 @@
       {% for run in latest_runs %}
         <div class="timeline-item">
           <strong>{{ run.get_kind_display }} · {{ run.get_status_display }}</strong>
+          {% if run.trigger == 'research_api' or run.trigger == 'research_replay' %}<a href="/research/?run={{ run.public_id }}">打开研究任务</a>{% endif %}
           <div class="usage-line">{{ run.started_at }}{% if run.finished_at %} · {{ run.finished_at }}{% endif %} · {{ run.total_cost_cny }} 元</div>
           {% if request.user.is_staff %}
             {% if run.metrics_json %}<div class="usage-line">metrics: {{ run.metrics_json }}</div>{% endif %}

@@ -366,8 +366,11 @@ def _find_near_duplicate_item(document: ExtractedDocument) -> ContentItem | None
 def _link_duplicate_group(item: ContentItem) -> None:
     if item.duplicate_group_id:
         return
+    fingerprint = f"title:{item.title_fingerprint or title_fingerprint(item.title)}"
+    if len(fingerprint) > DuplicateGroup._meta.get_field("fingerprint").max_length:
+        fingerprint = content_fingerprint(fingerprint)
     group, _ = DuplicateGroup.objects.get_or_create(
-        fingerprint=f"title:{item.title_fingerprint or title_fingerprint(item.title)}",
+        fingerprint=fingerprint,
         defaults={"canonical_item": item},
     )
     item.duplicate_group = group

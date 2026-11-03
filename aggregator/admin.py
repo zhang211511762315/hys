@@ -187,7 +187,21 @@ class CrawlJobAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
 
 
-admin.site.register(RawDocument)
+@admin.register(RawDocument)
+class RawDocumentAdmin(admin.ModelAdmin):
+    list_display = ("id", "title", "source", "fetched_at")
+    list_select_related = ("source",)
+    list_per_page = 50
+    # The primary key supports a bounded newest-first scan without sorting bodies.
+    ordering = ("-pk",)
+    show_full_result_count = False
+    search_fields = ("title", "url")
+    readonly_fields = ("created_at", "updated_at")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).defer("html", "extracted_text")
+
+
 admin.site.register(CrawlFailure)
 admin.site.register(CrawlNetworkEvent)
 admin.site.register(DuplicateGroup)
